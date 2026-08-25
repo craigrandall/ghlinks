@@ -1,0 +1,67 @@
+classDiagram
+    class LinkKind {
+        <<enum>>
+        +RepoRoot
+        +RepoFile
+        +Gist
+        +PagesSite
+    }
+
+    class Classify {
+        +classify(url: String): LinkKind
+    }
+
+    class GitHub {
+        -client: reqwest::Client
+        -token: Option<String>
+        +new(client: Client, token: Option<String>): GitHub
+        +fetch_repo(owner: &str, repo: &str): Result<RepoData>
+        +fetch_gist(id: &str): Result<GistData>
+        +fetch_languages(owner: &str, repo: &str): Result<LanguageMap>
+        +fetch_releases(owner: &str, repo: &str): Result<Vec<ReleaseEntry>>
+    }
+
+    class Discovery {
+        +fetch_mentions(repo: &RepoData): Result<Vec<ExternalMention>>
+    }
+
+    class RepoData {
+        <<struct>>
+        +owner: String
+        +name: String
+        +description: Option<String>
+        +license: LicenseInfo
+        +releases: Vec<ReleaseEntry>
+        +languages: LanguageMap
+        +community: CommunityStats
+        +external: Vec<ExternalMention>
+    }
+
+    class GistData {
+        <<struct>>
+        +owner: String
+        +id: String
+        +description: Option<String>
+        +files: Vec<GistFile>
+    }
+
+    class ExternalMention {
+        <<struct>>
+        +source_url: String
+        +title: Option<String>
+        +score: Option<i64>
+        +comments: Option<i64>
+    }
+
+    class Main {
+        +run(): Result<()>
+    }
+
+    Classify --> LinkKind
+    Main --> Classify
+    Main --> GitHub
+    Main --> Discovery
+    GitHub --> RepoData
+    GitHub --> GistData
+    Discovery --> ExternalMention
+    RepoData --> ExternalMention

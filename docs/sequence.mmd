@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant User
+    participant Main as main.rs
+    participant Classify as classify.rs
+    participant GitHub as github.rs
+    participant Discovery as discovery.rs
+    participant Model as model.rs
+
+    User->>Main: Run ghlinks\n--input links.txt\n--output report.json
+    Main->>Main: Read links.txt
+    Main->>Classify: classify(urls)
+    Classify-->>Main: LinkKind list
+
+    loop For each LinkKind
+        Main->>GitHub: fetch metadata\n(repos/gists/pages)
+        GitHub-->>Main: RepoData/GistData
+
+        alt external discovery enabled
+            Main->>Discovery: fetch external mentions\n(Hacker News)
+            Discovery-->>Main: ExternalMention list
+        else external discovery disabled
+            Main-->>Main: Skip discovery
+        end
+
+        Main->>Model: assemble structs\n(RepoData/GistData,\nExternalMention)
+        Model-->>Main: AnalysisOutput
+    end
+
+    Main->>Main: Serialize AnalysisOutput\nas JSON
+    Main-->>User: report.json

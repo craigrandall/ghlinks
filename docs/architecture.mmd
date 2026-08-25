@@ -1,0 +1,31 @@
+flowchart TD
+    subgraph Input
+        A["Input file\n(list of URLs)"]
+    end
+
+    subgraph Classification
+        B["classify.rs\nURL → LinkKind"]
+    end
+
+    subgraph GitHub
+        C["github.rs\nGitHub client\nrepo/gist/pages metadata"]
+    end
+
+    subgraph Discovery
+        D["discovery.rs\nHacker News\nexternal mentions"]
+    end
+
+    subgraph Model
+        E["model.rs\nRepoData, GistData,\nReleaseEntry, ExternalMention"]
+    end
+
+    subgraph Orchestration
+        F["main.rs\nCLI, concurrency,\nJSON output"]
+    end
+
+    A --> B
+    B --> C
+    B --> D
+    C --> E
+    D --> E
+    E --> F

@@ -1,0 +1,19 @@
+flowchart TD
+    A["Input file\nlinks.txt"] --> B["main.rs\nread URLs"]
+
+    B --> C["classify.rs\nURL → LinkKind list"]
+
+    subgraph Concurrent processing
+        direction LR
+        D["Per-link task\nspawned via futures::stream"]
+        D --> E["github.rs\nfetch repo/gist/pages\nmetadata, releases,\nlanguages, contributors"]
+        D --> F["discovery.rs\nfetch external mentions\n(Hacker News)"]
+    end
+
+    C --> D
+
+    E --> G["model.rs\nassemble RepoData/GistData,\nExternalMention"]
+    F --> G
+
+    G --> H["main.rs\naggregate AnalysisOutput"]
+    H --> I["Serialize to JSON\nreport.json"]

@@ -43,8 +43,9 @@ pub async fn hacker_news(client: &Client, target_url: &str) -> Result<Vec<Extern
             Ok(r) => r,
             Err(e) => {
                 if attempt >= HN_MAX_RETRIES {
-                    return Err(e)
-                        .context(format!("Hacker News request failed after {attempt} attempt(s)"));
+                    return Err(e).context(format!(
+                        "Hacker News request failed after {attempt} attempt(s)"
+                    ));
                 }
                 let delay = retry::backoff_delay(attempt);
                 eprintln!(
@@ -105,7 +106,6 @@ async fn json_response(resp: reqwest::Response) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn parses_a_representative_algolia_hit() {

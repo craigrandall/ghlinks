@@ -1,4 +1,9 @@
-# ghlinks v0.12 → v0.13 engineering review
+# ghlinks v0.12-to-v0.13 engineering review
+
+*Historical record — see `docs/ARCHITECTURE.md` and `docs/CONTRIBUTING.md`
+for current-state documentation. This document is preserved for the
+design rationale behind the v0.13 rewrite; it is not kept in sync with
+later changes.*
 
 **Requestor**: Craig Randall
 **Reviewer**: Claude (free)
@@ -13,8 +18,10 @@ Then a v0.13 implementation addressing what's practical to fix in one pass,
 prioritized as you specified: **correctness → provenance → failure
 visibility → tests → rate limiting.**
 
-This document is the analysis and rationale. `v0.12-to-v0.13.diff` is the
-literal diff. Both ship alongside the code.
+This document is the analysis and rationale. The literal diff is
+preserved in git history as commit `d2464c4` ("ghlinks v0.13 engineering
+review changes"); reproduce it locally with
+`git diff a0828ba..d2464c4` against this repository.
 
 ---
 
@@ -373,8 +380,9 @@ None of that ran. I'm not going to describe any of it as passing.
 - Confirmed zero new dependencies were added (checked `Cargo.toml`
   directly), which was a deliberate choice to keep this diff's
   unverified-by-me surface as small as possible.
-- Generated a real `diff -ruN` against your v0.12 baseline
-  (`v0.12-to-v0.13.diff`) rather than describing changes from memory.
+- Generated a real `diff -ruN` against your v0.12 baseline rather than
+  describing changes from memory (preserved today as git commit
+  `d2464c4`; reproduce with `git diff a0828ba..d2464c4`).
 
 That's a real, disciplined review — but it is categorically not the same
 claim as "this compiles." Please treat `cargo fmt && cargo check && cargo
@@ -397,5 +405,5 @@ Please run it for real as the actual check.
 
 `classify.rs`, `discovery.rs`, `github.rs`, `main.rs`, `model.rs` (all
 five source files), plus a new `retry.rs`, `run.ps1`, `README.md`,
-`Cargo.toml`/`Cargo.lock` (version bump only). Full detail in
-`v0.12-to-v0.13.diff`.
+`Cargo.toml`/`Cargo.lock` (version bump only). Full detail is in git
+commit `d2464c4` (`git diff a0828ba..d2464c4`).

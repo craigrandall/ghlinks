@@ -4,19 +4,23 @@ flowchart TD
     end
 
     subgraph Classification
-        B["classify.rs\nURL → LinkKind"]
+        B["classify.rs\nURL to LinkKind\n(repo root/file, gist, pages,\nuser/org profile, unsupported, unknown)"]
     end
 
     subgraph GitHub
-        C["github.rs\nGitHub client\nrepo/gist/pages metadata"]
+        C["github.rs\nGraphQL-first client\nrepo/gist/pages metadata"]
     end
 
     subgraph Discovery
-        D["discovery.rs\nHacker News\nexternal mentions"]
+        D["discovery.rs\nHacker News (Algolia)\nexternal mentions"]
+    end
+
+    subgraph Retry
+        R["retry.rs\nshared retry/backoff policy\n(pure functions, unit-tested)"]
     end
 
     subgraph Model
-        E["model.rs\nRepoData, GistData,\nReleaseEntry, ExternalMention"]
+        E["model.rs\nLinkRecord, RepoData, GistData,\nReleaseEntry, ExternalMention,\nExternalDiscovery, RunSummary, Report"]
     end
 
     subgraph Orchestration
@@ -26,6 +30,8 @@ flowchart TD
     A --> B
     B --> C
     B --> D
+    R -.-> C
+    R -.-> D
     C --> E
     D --> E
     E --> F

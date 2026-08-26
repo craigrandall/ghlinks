@@ -1,3 +1,18 @@
+//! The `report.json` schema: every type in this file derives `Serialize`
+//! and is written out, directly or nested, as part of `Report`. This
+//! module is intentionally schema-only — no HTTP calls, no business
+//! logic, no field computed from another field at construction time.
+//! Collection modules (`github.rs`, `discovery.rs`) build these structs
+//! from API responses; `main.rs` assembles them into a `Report` and
+//! serializes it. If a change here isn't purely "add/rename/remove a
+//! field," it likely belongs in a collection module instead.
+//!
+//! Several fields carry their own semantics caveats as doc-comments
+//! (e.g. `github_contributors_count_semantics`, the ok/error/skipped
+//! distinction on `ExternalDiscovery`) rather than leaving a downstream
+//! reader to infer meaning from a bare number — see the README's "Known
+//! limitations" section for the reasoning behind each one.
+
 use serde::Serialize;
 use std::collections::BTreeMap;
 

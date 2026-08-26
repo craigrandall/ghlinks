@@ -16,11 +16,22 @@ The project is a deterministic collector for GitHub-hosted links:
 
 ## 2. Project Structure
 
-- **`src/classify.rs`** – URL → `LinkKind` classification.
-- **`src/github.rs`** – GitHub API client and metadata collection.
+- **`src/classify.rs`** – URL → `LinkKind` classification (repo root/file,
+  gist, Pages site, user/org profile, unsupported GitHub URL, or unknown).
+- **`src/github.rs`** – GitHub client, GraphQL-first: one round-trip pulls
+  most repo facts, with a few small REST calls for what GraphQL doesn't
+  expose well (languages, contributor count via the `Link` header, gists).
 - **`src/discovery.rs`** – External mentions via Hacker News:
   > “This intentionally does NOT attempt sentiment or stance classification — it only collects raw signals (title, score, comment count).”
-- **`src/model.rs`** – Data model and JSON schema.
+  Reddit discovery is deliberately not handled here — see
+  `ADRs/reddit-mention-discovery-moves-to-synthesis-pass.md`.
+- **`src/retry.rs`** – Shared retry/backoff decision logic used by both
+  `github.rs` and `discovery.rs`. Deliberately dependency-free pure
+  functions, decoupled from any HTTP I/O so they're unit-testable in
+  isolation — see the module's own doc-comment and its test module for
+  the pattern to follow if you add another retrying API call.
+- **`src/model.rs`** – Data model and JSON schema (`LinkRecord`,
+  `RepoData`, `GistData`, `ExternalDiscovery`, `RunSummary`, `Report`).
 - **`src/main.rs`** – CLI, orchestration, concurrency, and output.
 - **`run.ps1`** – PowerShell wrapper for Windows usage.
 
@@ -76,6 +87,11 @@ The project is a deterministic collector for GitHub-hosted links:
   - `classify.rs`: URL classification.
   - `github.rs`: parsing of GitHub responses (using fixtures).
   - `discovery.rs`: parsing of Hacker News responses.
+  - `retry.rs`: retry/backoff decision logic — this module is the model
+    example for testability, since it's pure functions with no HTTP I/O;
+    prefer that shape (policy separated from mechanism) for new
+    retry-adjacent logic rather than inlining decisions into the HTTP
+    call sites.
 
 - **Integration tests**:
   - End-to-end run over a small fixture input file.
@@ -86,12 +102,29 @@ The project is a deterministic collector for GitHub-hosted links:
 
 ## 7. Documentation
 
-- Update `README.md` and `DESIGN.md` when:
+`ghlinks` intentionally keeps most implementation detail in source
+doc-comments rather than a separate design document — see each module's
+top-level `//!` comment for its purpose, non-obvious decisions, and
+failure behavior before writing new prose documentation elsewhere.
+
+- Update `README.md` when:
   - Adding new fields to the JSON schema.
   - Changing configuration or CLI behavior.
   - Introducing new modules or external sources.
+  - Adding or changing a "Known limitation."
 
-- Update `ARCHITECTURE.md` when:
+- Update the relevant module's `//!` doc-comment when:
+  - Changing that module's externally observable behavior.
+  - Adding a non-obvious design decision a future contributor would
+    otherwise have to rediscover.
+
+- Update the `.mmd` diagrams in `docs/` (see `docs/ARCHITECTURE.md` for
+  what each one covers) when:
   - Introducing new modules or external sources.
   - Changing the sequencing of processing or data flow.
-  - Changing the pipeline.
+  - Changing the pipeline or concurrency model.
+
+- Record a new ADR in `ADRs/` (see `ADRs/_README.md`) for any decision
+  that's expensive to reverse, constrains later work, or had genuine
+  alternatives worth recording the reasoning for — not for routine
+  changes covered by the above.

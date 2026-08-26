@@ -10,9 +10,10 @@ an LLM reading the output, not for a scraper. It is deliberately a
 report "I don't know" honestly than guess, retry silently forever, or
 quietly drop a source without saying so.
 
-Additional project documentation may be found in the `docs` folder (e.g. 
-`ARCHITECTURE.md`, Mermaid diagrams (.mmd files), `CONTRIBUTING.md`, 
-`DESIGN.md`).
+Additional project documentation may be found in the `docs` folder (e.g.
+`ARCHITECTURE.md` and the Mermaid diagrams (.mmd files) it points at, and
+`CONTRIBUTING.md`). `docs/history/` holds point-in-time review documents
+that are not kept current — see the note at the top of each.
 
 ## Why it's shaped this way
 

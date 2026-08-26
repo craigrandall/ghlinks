@@ -1,19 +1,21 @@
 flowchart TD
     A["Input file\nlinks.txt"] --> B["main.rs\nread URLs"]
 
-    B --> C["classify.rs\nURL → LinkKind list"]
+    B --> C["classify.rs\nURL to LinkKind list"]
 
     subgraph Concurrent processing
         direction LR
-        D["Per-link task\nspawned via futures::stream"]
+        D["Per-link task\nspawned via futures::stream\n(bounded by --concurrency)"]
         D --> E["github.rs\nfetch repo/gist/pages\nmetadata, releases,\nlanguages, contributors"]
-        D --> F["discovery.rs\nfetch external mentions\n(Hacker News)"]
+        D --> F["discovery.rs\nfetch external mentions\n(Hacker News only)"]
+        E -.retries via.-> RT["retry.rs\nshared backoff policy\n(--max-retries, --timeout-secs)"]
+        F -.retries via.-> RT
     end
 
     C --> D
 
-    E --> G["model.rs\nassemble RepoData/GistData,\nExternalMention"]
+    E --> G["model.rs\nassemble LinkRecord\n(RepoData/GistData,\nExternalMention, fetch_errors)"]
     F --> G
 
-    G --> H["main.rs\naggregate AnalysisOutput"]
+    G --> H["main.rs\naggregate Report\n(schema_version, run_summary, records)"]
     H --> I["Serialize to JSON\nreport.json"]

@@ -1,3 +1,21 @@
+//! CLI entry point and orchestrator: parses arguments, reads the input
+//! file, classifies each URL (`classify.rs`), fans out concurrently to
+//! GitHub collection (`github.rs`) and — unless `--skip-external` —
+//! Hacker News discovery (`discovery.rs`), assembles the results into the
+//! `model.rs` types, and serializes one `Report` to the output file.
+//!
+//! Concurrency is bounded (`--concurrency`, via
+//! `stream::buffer_unordered`) rather than unbounded, so a large input
+//! file can't open an unbounded number of simultaneous connections.
+//! Failures are captured per link in that record's `fetch_errors` rather
+//! than aborting the run — a bad URL or a transient API failure on one
+//! link should never cost the other 97.
+//!
+//! This module deliberately contains no parsing/classification logic of
+//! its own (that's `classify.rs`) and no API-response handling of its
+//! own (that's `github.rs`/`discovery.rs`) — its job is sequencing and
+//! aggregation, not collection.
+
 mod classify;
 mod discovery;
 mod github;

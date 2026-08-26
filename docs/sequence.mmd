@@ -4,6 +4,7 @@ sequenceDiagram
     participant Classify as classify.rs
     participant GitHub as github.rs
     participant Discovery as discovery.rs
+    participant Retry as retry.rs
     participant Model as model.rs
 
     User->>Main: Run ghlinks\n--input links.txt\n--output report.json
@@ -11,20 +12,25 @@ sequenceDiagram
     Main->>Classify: classify(urls)
     Classify-->>Main: LinkKind list
 
-    loop For each LinkKind
+    loop For each LinkKind, concurrently
         Main->>GitHub: fetch metadata\n(repos/gists/pages)
-        GitHub-->>Main: RepoData/GistData
+        GitHub->>Retry: should_retry? / backoff_delay?
+        Retry-->>GitHub: retry decision
+        GitHub-->>Main: RepoData/GistData or fetch_errors entry
 
         alt external discovery enabled
             Main->>Discovery: fetch external mentions\n(Hacker News)
-            Discovery-->>Main: ExternalMention list
-        else external discovery disabled
+            Discovery->>Retry: should_retry? / backoff_delay?
+            Retry-->>Discovery: retry decision
+            Discovery-->>Main: ExternalMention list or fetch_errors entry
+        else external discovery disabled (--skip-external)
             Main-->>Main: Skip discovery
         end
 
-        Main->>Model: assemble structs\n(RepoData/GistData,\nExternalMention)
-        Model-->>Main: AnalysisOutput
+        Main->>Model: assemble LinkRecord\n(RepoData/GistData,\nExternalMention, fetch_errors)
+        Model-->>Main: LinkRecord
+        Note over Main: A per-link failure is recorded\nin that record's fetch_errors;\nit does not abort the batch run.
     end
 
-    Main->>Main: Serialize AnalysisOutput\nas JSON
+    Main->>Main: Assemble Report\n(schema_version, run_summary, records)\nand serialize as JSON
     Main-->>User: report.json

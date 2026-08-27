@@ -60,7 +60,7 @@ Implementation is compliant when:
 - `main.rs`'s `ExternalDiscovery` construction no longer lists `"reddit"` in `sources`, no longer references a Reddit-specific result limit, and `coverage` text describes only Hacker News.
 - `model.rs`'s `ExternalDiscovery` struct no longer carries a Reddit-specific field, and the doc comment on `ExternalMention.source` no longer lists `"reddit"` as an expected value.
 - A `ghlinks` run against a real URL produces a `report.json` with zero Reddit-related entries in `fetch_errors`.
-- `reddit_client.rs` exists in the repository but outside `src/` (e.g. under a `future/` directory) and is not referenced by any `mod` declaration, so it is excluded from the compiled binary. **Status as of v0.14: not present in this repository** — the file was written before this decision but never committed. If it's still available locally, add it under `future/reddit_client.rs` (untracked by any `mod` declaration) to make this bullet true; if it's no longer available, drop this bullet and rely on the other four confirmation criteria, which don't depend on the file's presence.
+- `reddit_client.rs` exists outside the repository
 
 ## Pros and Cons of the Options
 

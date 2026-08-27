@@ -1,0 +1,28 @@
+# Cargo build artifacts
+/target/
+**/*.rs.bk
+
+*.json
+!schema-example.json
+
+# Cargo lockfile is checked in for binaries (see Cargo.toml workspace members).
+# We do check it in here because the workspace produces shipping binaries.
+
+# WiX intermediate files
+*.wixobj
+*.wixpdb
+*.msi
+!installer/*.wxs
+
+# IDE
+/.idea/
+/.vscode/
+*.iml
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# personal notes
+/_NOTES/

@@ -1,0 +1,24 @@
+[package]
+name = "ghlinks"
+version = "0.14.0"
+edition = "2021"
+description = "Deterministic collector for GitHub-hosted link metadata (repos, gists, Pages sites) plus free-API discovery of external mentions."
+
+[[bin]]
+name = "ghlinks"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+urlencoding = "2"
+
+[profile.release]
+opt-level = 2

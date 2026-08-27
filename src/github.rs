@@ -10,7 +10,9 @@
 //! `None` three steps downstream. The field names mirror exactly what the
 //! hand-written GraphQL query below requests, so this is a mechanical
 //! transcription of a known, fixed query shape — not a guess at an
-//! external schema.
+//! external schema. See
+//! `ADRs/typed-response-models-over-raw-json-values.md` for the full
+//! rationale and the alternatives considered.
 //!
 //! All requests go through `send_with_retry`, which retries transient
 //! network errors, 429s, 5xxs, and rate-limit-flavored 403s with
@@ -58,9 +60,10 @@ impl GitHub {
 
     /// Overrides the API base URL. Not used by anything shipped in this
     /// version, but kept as a ready hook for adding wiremock-style
-    /// integration tests later without touching call sites — see the
-    /// "not implemented" notes in this release's review for why those
-    /// tests aren't included yet.
+    /// integration tests later without touching call sites. No ADR covers
+    /// this — it's a deferred addition, not an architecture decision —
+    /// but the hook is left in place so a future contributor can wire up
+    /// HTTP-mocked integration tests without a preceding refactor.
     #[allow(dead_code)]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();

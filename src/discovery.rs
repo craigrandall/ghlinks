@@ -12,6 +12,18 @@
 //! The Hacker News call below goes through the same retry/backoff policy
 //! as the GitHub client (see `retry.rs`), sharing one implementation
 //! rather than reinventing it per source.
+//!
+//! Unlike `github.rs`, the Algolia response here is read via raw
+//! `serde_json::Value` lookups rather than typed structs (see
+//! `ADRs/typed-response-models-over-raw-json-values.md`, which is scoped
+//! to GitHub's GraphQL/REST responses). This is a deliberate, narrower
+//! risk tradeoff, not an oversight: Hacker News mentions are supplementary,
+//! best-effort signal — the README already treats `external_mentions` as
+//! a floor, not a ceiling — and a missing field here degrades visibly
+//! (`.unwrap_or("(untitled)")`) rather than silently producing a wrong
+//! fact the way an untyped miss on `stargazers_count` or `license_key`
+//! would. If this endpoint's response shape grows more fields this module
+//! actually depends on, revisit typed structs here too.
 
 use crate::model::ExternalMention;
 use crate::retry;

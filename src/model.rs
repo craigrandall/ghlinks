@@ -18,9 +18,11 @@ use std::collections::BTreeMap;
 
 /// Bumped whenever the shape of the JSON this tool writes changes in a way
 /// that could break a consumer parsing it. 1 was the original bare-array
-/// shape. 2 is the wrapped `{schema_version, run_summary, records}` shape
-/// introduced in 0.14 — see ADRs/ for the rationale if one gets written
-/// for this change.
+/// shape (never emitted with an explicit `schema_version` field — its
+/// absence identifies it). 2 is the wrapped `{schema_version, run_summary,
+/// records}` shape introduced in 0.14 — see
+/// `ADRs/wrap-report-json-output-in-schema-versioned-envelope.md` for the
+/// full rationale and the alternatives considered.
 pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize, Default, Debug)]

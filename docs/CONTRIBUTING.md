@@ -21,6 +21,9 @@ The project is a deterministic collector for GitHub-hosted links:
 - **`src/github.rs`** – GitHub client, GraphQL-first: one round-trip pulls
   most repo facts, with a few small REST calls for what GraphQL doesn't
   expose well (languages, contributor count via the `Link` header, gists).
+  Responses are decoded into typed structs at the boundary rather than
+  traversed as raw `serde_json::Value` — see
+  `ADRs/typed-response-models-over-raw-json-values.md` for why.
 - **`src/discovery.rs`** – External mentions via Hacker News:
   > “This intentionally does NOT attempt sentiment or stance classification — it only collects raw signals (title, score, comment count).”
   Reddit discovery is deliberately not handled here — see
@@ -32,6 +35,10 @@ The project is a deterministic collector for GitHub-hosted links:
   the pattern to follow if you add another retrying API call.
 - **`src/model.rs`** – Data model and JSON schema (`LinkRecord`,
   `RepoData`, `GistData`, `ExternalDiscovery`, `RunSummary`, `Report`).
+  The top-level `Report` is a schema-versioned envelope
+  (`schema_version`, `run_summary`, `records`) rather than a bare array —
+  see `ADRs/wrap-report-json-output-in-schema-versioned-envelope.md` for
+  why.
 - **`src/main.rs`** – CLI, orchestration, concurrency, and output.
 - **`run.ps1`** – PowerShell wrapper for Windows usage.
 
@@ -128,3 +135,33 @@ failure behavior before writing new prose documentation elsewhere.
   that's expensive to reverse, constrains later work, or had genuine
   alternatives worth recording the reasoning for — not for routine
   changes covered by the above.
+
+## 8. AI-Assisted Review & Verification
+
+Some contributions to this project — including drafts of source code,
+ADRs, and documentation — are produced or reviewed with the help of an AI
+assistant. That assistant frequently runs in a sandboxed environment with
+**no Rust toolchain and no network access**, meaning any code it produces
+or reviews has been read for correctness but has **not** been compiled,
+linted, or executed. Treat AI-assisted output as unverified by
+construction, regardless of how confident or polished it looks, until it
+clears the same gate as any other change.
+
+The actual verification gate for this project is local and manual. Before
+considering any change — AI-assisted or not — ready for a pull request,
+run all of the following, in order, and confirm each one is clean:
+
+```bash
+cargo fmt
+cargo check
+cargo clippy
+cargo test
+cargo build --release
+```
+
+A pull request that includes AI-assisted changes should say so, and
+should confirm this sequence was actually run locally rather than
+inferred from the code "looking right." If any step above hasn't been
+run, say that explicitly in the PR rather than implying it has — this
+project would rather show an honest "not yet verified" than a false
+green.

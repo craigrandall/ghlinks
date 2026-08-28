@@ -58,13 +58,13 @@ impl GitHub {
         }
     }
 
-    /// Overrides the API base URL. Not used by anything shipped in this
-    /// version, but kept as a ready hook for adding wiremock-style
-    /// integration tests later without touching call sites. No ADR covers
-    /// this — it's a deferred addition, not an architecture decision —
-    /// but the hook is left in place so a future contributor can wire up
-    /// HTTP-mocked integration tests without a preceding refactor.
-    #[allow(dead_code)]
+    /// Overrides the API base URL. Used two ways: (1) `main.rs`'s hidden,
+    /// test-only `--github-base-url` flag (default:
+    /// `https://api.github.com`, i.e. a no-op for real runs), which lets
+    /// `tests/e2e.rs` point the actual compiled binary at a local mock
+    /// server; (2) directly by the `wiremock`-based HTTP-boundary and
+    /// orchestration test modules in this crate. No ADR covers this — it's
+    /// a testability hook, not an architecture decision.
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
@@ -647,5 +647,328 @@ mod tests {
         assert!(gist.owner.is_none());
         assert!(gist.history.is_empty());
         assert!(gist.files.is_empty());
+    }
+}
+
+/// T-3: HTTP-boundary integration tests. Unlike the parser-only tests
+/// above (which prove typed structs deserialize correctly given a JSON
+/// string), these run the *actual* `reqwest` client against a local
+/// `wiremock` server via `GitHub::with_base_url()` — proving what
+/// `ghlinks` actually does at HTTP failure boundaries (status codes,
+/// retries, pagination, malformed bodies), rather than assuming it from
+/// reading the code. `wiremock` is a dev-dependency only (see Cargo.toml);
+/// nothing here runs in the release binary.
+///
+/// Deliberately scoped to representative behavioral contracts (per the
+/// review that motivated this test module), not exhaustive per-endpoint
+/// coverage: one test per distinct *behavior*, not one test per endpoint.
+#[cfg(test)]
+mod http_boundary_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    /// Returns queued responses in order, one per received request, so a
+    /// single mounted mock can simulate a sequence (e.g. 500, 500, 200)
+    /// without wiremock's own call-count matchers.
+    struct SequencedResponses(Mutex<VecDeque<ResponseTemplate>>);
+
+    impl SequencedResponses {
+        fn new(responses: Vec<ResponseTemplate>) -> Self {
+            Self(Mutex::new(responses.into_iter().collect()))
+        }
+    }
+
+    impl Respond for SequencedResponses {
+        fn respond(&self, _req: &Request) -> ResponseTemplate {
+            self.0
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| ResponseTemplate::new(500))
+        }
+    }
+
+    fn client_against(base_url: &str, max_retries: u32) -> GitHub {
+        GitHub::new(reqwest::Client::new(), None, max_retries).with_base_url(base_url)
+    }
+
+    fn ok_repo_body() -> serde_json::Value {
+        json!({
+            "data": {
+                "repository": {
+                    "description": "a test repo",
+                    "stargazerCount": 5,
+                    "releases": { "totalCount": 1 }
+                }
+            }
+        })
+    }
+
+    // -- T-3.1: successful GraphQL round-trip through the real HTTP client --
+    #[tokio::test]
+    async fn graphql_repo_success_goes_through_real_http_to_a_typed_struct() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let repo = gh.graphql_repo("owner", "repo").await.unwrap();
+
+        assert_eq!(repo.description.as_deref(), Some("a test repo"));
+        assert_eq!(repo.stargazer_count, Some(5));
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "expected exactly one GraphQL request");
+        assert_eq!(requests[0].method.as_str(), "POST");
+    }
+
+    // -- T-3.2: HTTP 200 carrying a GraphQL-level errors array must NOT --
+    // -- be treated as a successful empty repository.                   --
+    #[tokio::test]
+    async fn graphql_level_errors_in_a_200_response_become_an_application_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"errors": [{"message": "rate limited"}]})),
+            )
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let result = gh.graphql_repo("owner", "repo").await;
+
+        assert!(
+            result.is_err(),
+            "a 200 wrapping a GraphQL errors array must surface as Err, not an empty Ok"
+        );
+        assert!(result.unwrap_err().to_string().contains("rate limited"));
+    }
+
+    // -- T-3.3: a malformed (non-JSON) 200 body is a parse error, not a --
+    // -- silent default/empty value.                                    --
+    #[tokio::test]
+    async fn malformed_response_body_is_reported_as_a_parse_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json at all"))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let result = gh.graphql_repo("owner", "repo").await;
+        assert!(result.is_err(), "malformed body must not parse as a valid response");
+    }
+
+    // -- T-3.4a: a plain HTTP failure with no rate-limit signal is --
+    // -- reported, not retried (retry.rs already unit-tests the policy; --
+    // -- this proves the client actually honors it end-to-end).         --
+    #[tokio::test]
+    async fn plain_403_is_reported_after_exactly_one_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let result = gh.repo_exists("owner", "repo").await;
+
+        assert!(result.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "a plain 403 (no rate-limit signal) must not be retried"
+        );
+    }
+
+    // -- T-3.4b: repo_exists() treats a 404 as Ok(false), not an error --
+    // -- (a not-found repo is a valid, non-exceptional answer for this --
+    // -- endpoint specifically).                                       --
+    #[tokio::test]
+    async fn repo_exists_returns_ok_false_on_404_rather_than_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        assert_eq!(gh.repo_exists("owner", "missing").await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn repo_exists_returns_ok_true_on_200() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        assert_eq!(gh.repo_exists("owner", "repo").await.unwrap(), true);
+    }
+
+    // -- T-3.5: transient 500s are retried and an eventual 200 succeeds --
+    #[tokio::test]
+    async fn two_server_errors_then_success_eventually_succeeds_after_retrying() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(SequencedResponses::new(vec![
+                ResponseTemplate::new(500),
+                ResponseTemplate::new(500),
+                ResponseTemplate::new(200).set_body_json(ok_repo_body()),
+            ]))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 5);
+        let repo = gh.graphql_repo("owner", "repo").await.unwrap();
+
+        assert_eq!(repo.description.as_deref(), Some("a test repo"));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3, "expected 2 failed attempts + 1 success");
+    }
+
+    // -- T-3.5b: retries stop at max_retries and the failure is reported --
+    #[tokio::test]
+    async fn persistent_server_errors_fail_after_exhausting_max_retries() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let result = gh.graphql_repo("owner", "repo").await;
+
+        assert!(result.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            3,
+            "expected exactly max_retries (3) attempts, no more, no fewer"
+        );
+    }
+
+    // -- T-3.6: releases() follows pagination via the cursor and --
+    // -- preserves CREATED_AT DESC order across pages — this is the --
+    // -- executable proof behind #6's release semantics. --
+    #[tokio::test]
+    async fn releases_follows_pagination_cursor_and_preserves_created_at_desc_order() {
+        let server = MockServer::start().await;
+        let page1 = json!({
+            "data": { "repository": { "releases": {
+                "nodes": [
+                    {"tagName": "v3", "name": "Three", "publishedAt": "2026-03-01T00:00:00Z"},
+                    {"tagName": "v2", "name": "Two", "publishedAt": "2026-02-01T00:00:00Z"}
+                ],
+                "pageInfo": {"hasNextPage": true, "endCursor": "cursor-1"}
+            }}}
+        });
+        let page2 = json!({
+            "data": { "repository": { "releases": {
+                "nodes": [
+                    {"tagName": "v1", "name": "One", "publishedAt": "2026-01-01T00:00:00Z"}
+                ],
+                "pageInfo": {"hasNextPage": false, "endCursor": null}
+            }}}
+        });
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(SequencedResponses::new(vec![
+                ResponseTemplate::new(200).set_body_json(page1),
+                ResponseTemplate::new(200).set_body_json(page2),
+            ]))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let releases = gh.releases("owner", "repo").await.unwrap();
+
+        assert_eq!(
+            releases.iter().map(|r| r.tag_name.clone()).collect::<Vec<_>>(),
+            vec![Some("v3".into()), Some("v2".into()), Some("v1".into())],
+            "release order across pages must remain CREATED_AT DESC, not be re-sorted"
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "expected one request per page, cursor-chained");
+    }
+
+    // -- T-3.7a: contributors_count() uses the Link header's rel="last" --
+    // -- page number when present.                                     --
+    #[tokio::test]
+    async fn contributors_count_reads_the_last_page_number_from_the_link_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/contributors"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{"login": "a"}]))
+                    .insert_header(
+                        "link",
+                        format!(
+                            r#"<{u}?page=2>; rel="next", <{u}?page=14>; rel="last""#,
+                            u = format!("{}/repos/owner/repo/contributors", server.uri())
+                        )
+                        .as_str(),
+                    ),
+            )
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        assert_eq!(gh.contributors_count("owner", "repo").await.unwrap(), Some(14));
+    }
+
+    // -- T-3.7b: with no Link header (whole result fit on one page), --
+    // -- falls back to counting the returned array.                  --
+    #[tokio::test]
+    async fn contributors_count_falls_back_to_array_length_with_no_link_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/contributors"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"login": "a"}])))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        assert_eq!(gh.contributors_count("owner", "repo").await.unwrap(), Some(1));
+    }
+
+    // -- T-3.8: gist() end-to-end through the real HTTP client --
+    #[tokio::test]
+    async fn gist_success_goes_through_real_http_to_a_typed_struct() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/gists/abc123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "description": "a test gist",
+                "owner": {"login": "octocat"},
+                "comments": 2,
+                "history": [],
+                "files": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let gist = gh.gist("abc123").await.unwrap();
+        assert_eq!(gist.description.as_deref(), Some("a test gist"));
+        assert_eq!(gist.owner.unwrap().login.as_deref(), Some("octocat"));
     }
 }

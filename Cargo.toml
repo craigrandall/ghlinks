@@ -20,5 +20,16 @@ chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 urlencoding = "2"
 
+[dev-dependencies]
+# Test infrastructure dependency ONLY — not required by the application at
+# runtime, not present in [dependencies], and never linked into the release
+# binary. Used exclusively by integration tests (`src/github.rs`,
+# `src/main.rs`, `tests/e2e.rs`) to run a local HTTP mock server that
+# `GitHub::with_base_url()` points the client at, so the HTTP boundary
+# itself (status codes, headers, retries, pagination) can be tested against
+# real `reqwest` requests without calling the live GitHub API. See T-3/T-4/
+# T-1 test modules for usage.
+wiremock = "0.6"
+
 [profile.release]
 opt-level = 2

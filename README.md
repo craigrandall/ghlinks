@@ -140,10 +140,10 @@ data.**
         "github_contributors_count": 14,
         "github_contributors_count_semantics": "GitHub contributors endpoint entries; anon=true; not unique humans",
         "releases_total_count": 61,
-        "releases_last_12_months": 61,
-        "latest_release_tag": "v6.1.0",
+        "releases_last_12_months": 61,        // count of releases published_at >= now-365d; independent of recent_releases below
+        "latest_release_tag": "v6.1.0",        // first entry of recent_releases, i.e. first by CREATED_AT DESC — see "Known limitations"
         "latest_release_published_at": "2026-03-15T00:00:00Z",
-        "recent_releases": [ /* up to 100 most recent */ ]
+        "recent_releases": [ /* up to 100 releases, CREATED_AT DESC; NOT a 12-month subset — see "Known limitations" */ ]
       },
       "gist_data": null,
       "pages_candidates_checked": [],
@@ -224,6 +224,18 @@ non-obvious choices were made.
   based on every returned release, not only the first 100. Very
   release-heavy repositories can therefore take longer and consume more
   API quota.
+- **`recent_releases` is a bounded recent listing, not a 12-month
+  subset.** It's up to 100 releases in GitHub's `CREATED_AT DESC` order
+  (the same order the underlying GraphQL query requests) — GitHub's
+  `ReleaseOrderField` only supports ordering by `CREATED_AT` or `NAME`,
+  there is no `PUBLISHED_AT` ordering. A repository with 3 releases in the
+  last year and 97 older ones will still show up to 100 entries here, most
+  of them well outside any 12-month window. `releases_last_12_months` is a
+  separately computed 365-day count over the same full (non-truncated)
+  release set — the two fields answer different questions and must not be
+  conflated. `latest_release_tag`/`latest_release_published_at` are
+  derived from `recent_releases[0]`, i.e. first-by-creation-order, not an
+  independently verified "most recently published" release.
 - **Contributor count has GitHub endpoint semantics.** It is the count of
   entries returned by GitHub's contributors aggregation with `anon=true`,
   not a claim about unique human developers.

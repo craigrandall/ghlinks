@@ -40,7 +40,11 @@ The project is a deterministic collector for GitHub-hosted links:
   see `ADRs/wrap-report-json-output-in-schema-versioned-envelope.md` for
   why.
 - **`src/main.rs`** – CLI, orchestration, concurrency, and output.
+  `run_batch()` is the extracted, directly-testable core of the
+  concurrency/collection loop `main()` drives; `select_pages_candidate_index()`
+  is the extracted, pure Pages candidate-selection policy.
 - **`run.ps1`** – PowerShell wrapper for Windows usage.
+- **`tests/e2e.rs`** – end-to-end integration test (T-1); see §6.
 
 ## 3. Development Workflow
 
@@ -55,10 +59,15 @@ The project is a deterministic collector for GitHub-hosted links:
    - Strong typing and explicit error handling.
    - No sentiment/stance classification in `discovery.rs`.
 
-5. **Run tests** (once added):
+5. **Run tests**:
    ```bash
    cargo test
    ```
+   This runs unit tests (in each module's own `#[cfg(test)]` block),
+   HTTP-boundary and orchestration integration tests (which spin up a
+   local `wiremock` mock server — see §6), and the end-to-end fixture test
+   in `tests/e2e.rs` (which additionally spawns the compiled binary). No
+   network access or GitHub token is required to run the full suite.
 
 6. **Run a local end-to-end check**:
    ```bash
@@ -87,6 +96,13 @@ The project is a deterministic collector for GitHub-hosted links:
 - Use `anyhow::Context` for high-level context.
 - Consider introducing domain-specific error enums (`GitHubError`, `DiscoveryError`) for finer-grained handling.
 - Ensure partial failures are captured per link and surfaced in the output JSON.
+- `fetch_errors` is currently `Vec<String>` (schema v2) — a deliberate
+  decision to not restructure it into a typed/structured error object
+  until the domain failure taxonomy itself is settled from evidence, not
+  designed ahead of it. See `docs/failure-taxonomy-notes.md` for what the
+  HTTP-boundary/orchestration tests (§6) have established so far about
+  actual failure origins and behavior, and treat that as the prerequisite
+  reading before proposing a schema v3 error model.
 
 ## 6. Testing
 
@@ -99,10 +115,41 @@ The project is a deterministic collector for GitHub-hosted links:
     prefer that shape (policy separated from mechanism) for new
     retry-adjacent logic rather than inlining decisions into the HTTP
     call sites.
+  - `main.rs`: pure helper functions (`apply_releases`, `build_gist_data`,
+    `describe_kind`, `select_pages_candidate_index` — the last one is the
+    Pages candidate-selection *policy*, extracted specifically so it's
+    unit-testable without live GitHub calls; the actual HTTP resolution
+    loop in `process_link()` still owns the short-circuiting).
 
-- **Integration tests**:
-  - End-to-end run over a small fixture input file.
-  - JSON schema validation.
+- **HTTP-boundary integration tests** (`src/github.rs::http_boundary_tests`):
+  - Run the real `reqwest` client against a local `wiremock` mock server
+    via `GitHub::with_base_url()`, proving actual behavior at HTTP failure
+    boundaries (status codes, retries, pagination, malformed bodies) —
+    not just that a hand-built JSON string parses correctly.
+  - `wiremock` is a **test-only** `[dev-dependencies]` entry — it is never
+    linked into the release binary and is not required to run `ghlinks`
+    itself.
+
+- **Orchestration integration tests** (`src/main.rs::orchestration_tests`):
+  - Exercise `process_link()`/`run_batch()` — the real functions `main()`
+    calls — against a mocked GitHub server, covering per-link failure
+    isolation, Pages candidate short-circuiting, and the batch-level
+    contract that one bad link never costs the others their records.
+  - Hacker News discovery has no equivalent base-URL override (unlike
+    `github.rs`), so these tests run with `--skip-external`/
+    `skip_external: true` throughout. Adding an HN override hook is a
+    real, separate, small addition — deliberately left out of this pass
+    rather than bundled in as an incidental extra.
+
+- **End-to-end integration test** (`tests/e2e.rs`):
+  - Runs the actual compiled binary (via Cargo's
+    `CARGO_BIN_EXE_ghlinks`) over `tests/fixtures/links.txt`, pointed at a
+    mock GitHub server via the hidden `--github-base-url` flag (test-only;
+    not advertised in `--help`, same pattern as the hidden `--token`
+    flag), and validates the resulting `report.json`'s top-level contract.
+  - This is deliberately the last test layer to rely on: it's a contract
+    test of the complete pipeline built on top of the HTTP-boundary and
+    orchestration layers above, not a substitute for either.
 
 - **Property-based tests** (optional):
   - Fuzzing URL classification.

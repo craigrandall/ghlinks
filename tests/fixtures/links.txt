@@ -1,0 +1,6 @@
+# T-1 end-to-end fixture. Kept intentionally tiny and deterministic — this
+# is not meant to exercise every link_kind, just prove the full pipeline
+# (classify -> collect -> assemble -> serialize) actually runs end-to-end
+# against a mocked GitHub API and produces a structurally valid report.json.
+https://github.com/owner/repo
+not a valid url at all

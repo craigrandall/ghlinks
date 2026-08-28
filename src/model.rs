@@ -149,3 +149,106 @@ pub struct Report {
     pub run_summary: RunSummary,
     pub records: Vec<LinkRecord>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal, deliberately sparse Report — enough to serialize, not
+    /// meant to represent a realistic run. Kept in one place so every
+    /// structural test below builds on the same known-good starting point.
+    fn minimal_report() -> Report {
+        Report {
+            schema_version: SCHEMA_VERSION,
+            run_summary: RunSummary {
+                ghlinks_version: "0.0.0-test",
+                github_api_version: "2022-11-28",
+                hacker_news_api: "test",
+                reddit_note: "test",
+                started_at: "2026-01-01T00:00:00Z".into(),
+                finished_at: "2026-01-01T00:00:01Z".into(),
+                input_file: "links.txt".into(),
+                total_urls: 1,
+                link_kind_counts: BTreeMap::new(),
+                records_with_errors: 0,
+                concurrency: 1,
+                delay_ms: 0,
+                timeout_secs: 1,
+                max_retries: 1,
+                skip_external: false,
+            },
+            records: vec![],
+        }
+    }
+
+    /// Guards the exact contract documented in the README and depended on
+    /// by ADRs/wrap-report-json-output-in-schema-versioned-envelope.md: a
+    /// consumer reads `.schema_version`, `.run_summary`, and `.records` at
+    /// the top level, not a bare array. If this test needs to change, the
+    /// README and that ADR need to change with it — not the other way
+    /// around.
+    #[test]
+    fn report_serializes_as_an_object_with_the_three_documented_top_level_keys() {
+        let value = serde_json::to_value(minimal_report()).unwrap();
+        let obj = value.as_object().expect("Report must serialize as a JSON object, not an array");
+        assert!(obj.contains_key("schema_version"));
+        assert!(obj.contains_key("run_summary"));
+        assert!(obj.contains_key("records"));
+        assert_eq!(obj.len(), 3, "unexpected extra or missing top-level key");
+    }
+
+    #[test]
+    fn serialized_schema_version_matches_the_schema_version_constant() {
+        let value = serde_json::to_value(minimal_report()).unwrap();
+        assert_eq!(value["schema_version"], SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn records_array_length_matches_input() {
+        let mut report = minimal_report();
+        report.records.push(LinkRecord {
+            input_url: "https://github.com/o/r".into(),
+            canonical_url: Some("https://github.com/o/r".into()),
+            link_kind: "repo_root".into(),
+            owner: Some("o".into()),
+            repo: Some("r".into()),
+            file_path: None,
+            repo_data: None,
+            gist_data: None,
+            pages_candidates_checked: vec![],
+            pages_resolved_repo: None,
+            external_mentions: vec![],
+            external_discovery: ExternalDiscovery {
+                skipped: true,
+                sources: vec![],
+                coverage: "test",
+                hacker_news_query: "test",
+                hacker_news_status: "skipped",
+                hacker_news_mention_count: 0,
+            },
+            fetch_errors: vec![],
+            fetched_at: "2026-01-01T00:00:00Z".into(),
+            collector_version: "0.0.0-test",
+        });
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["records"].as_array().unwrap().len(), 1);
+    }
+
+    /// The absence-vs-zero distinction `ExternalDiscovery`'s own
+    /// doc-comment insists on is only real if it survives serialization —
+    /// this locks in the actual wire values, not just the in-memory type.
+    #[test]
+    fn external_discovery_status_values_round_trip_through_json_as_documented() {
+        let discovery = ExternalDiscovery {
+            skipped: false,
+            sources: vec!["hacker_news"],
+            coverage: "test",
+            hacker_news_query: "test",
+            hacker_news_status: "ok",
+            hacker_news_mention_count: 0,
+        };
+        let value = serde_json::to_value(&discovery).unwrap();
+        assert_eq!(value["hacker_news_status"], "ok");
+        assert_eq!(value["hacker_news_mention_count"], 0);
+    }
+}

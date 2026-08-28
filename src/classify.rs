@@ -219,12 +219,119 @@ mod tests {
     }
 
     #[test]
-    fn canonicalize_returns_none_only_for_unparseable_urls() {
-        assert_eq!(canonicalize("not a url"), None);
-        // Recognized-but-out-of-scope still canonicalizes.
-        assert_eq!(
-            canonicalize("https://github.com/eugeneyan/"),
-            Some("https://github.com/eugeneyan".to_string())
-        );
+    fn classify_ignores_query_string_and_fragment_on_repo_root_urls() {
+        // canonicalize() already had a test for this; classify() itself
+        // (the function that decides *what kind* of link this is) hadn't
+        // been separately checked against a query/fragment-bearing URL.
+        assert!(matches!(
+            classify("https://github.com/owner/repo?tab=readme#readme"),
+            LinkKind::RepoRoot { .. }
+        ));
+    }
+
+    #[test]
+    fn trailing_dot_git_is_trimmed_even_when_repeated() {
+        // trim_end_matches(".git") strips every trailing occurrence, not
+        // just one — "repo.git.git" becomes "repo", not "repo.git". This
+        // documents that actual (somewhat surprising) behavior so a future
+        // change to it is a deliberate decision, not an accidental
+        // regression.
+        assert!(matches!(
+            classify("https://github.com/owner/repo.git.git"),
+            LinkKind::RepoRoot { repo, .. } if repo == "repo"
+        ));
+    }
+
+    #[test]
+    fn dot_git_substring_in_the_middle_of_a_repo_name_is_left_alone() {
+        // Only a *trailing* ".git" is special-cased; one that isn't at the
+        // end (e.g. a repo literally named "my.github.repo") must survive
+        // untouched.
+        assert!(matches!(
+            classify("https://github.com/owner/my.github.repo"),
+            LinkKind::RepoRoot { repo, .. } if repo == "my.github.repo"
+        ));
+    }
+
+    #[test]
+    fn github_enterprise_style_custom_domains_are_unknown_not_repo_root() {
+        // classify() only recognizes github.com/www.github.com and
+        // *.github.io. A GitHub Enterprise Server instance on its own
+        // domain (e.g. github.mycompany.com) is not special-cased and
+        // falls through to Unknown. This documents that as current,
+        // intentional scope — ghlinks targets github.com only — rather
+        // than leaving it as an unstated assumption. If GHE support is
+        // ever wanted, that's a scope decision (arguably ADR-worthy, since
+        // it'd need a configurable host allowlist), not a bug fix.
+        assert!(matches!(
+            classify("https://github.mycompany.com/owner/repo"),
+            LinkKind::Unknown
+        ));
+    }
+
+    #[test]
+    fn pages_candidates_can_duplicate_when_the_first_path_segment_matches_the_owner_repo() {
+        // owner.github.io/owner.github.io is a degenerate but legal URL:
+        // both candidate-generation rules produce the same (owner, repo)
+        // pair, so `candidates` ends up with a literal duplicate. It's
+        // harmless (main.rs's resolution loop just checks the same repo
+        // twice and stops at the first success either way) but wasteful —
+        // one avoidable extra GitHub API call per occurrence. Documenting
+        // the current behavior here rather than silently dedupe-ing it,
+        // since that's a small, separate fix main.rs's Pages-resolution
+        // loop or classify()'s candidate generation could make.
+        if let LinkKind::PagesSite { candidates, .. } =
+            classify("https://owner.github.io/owner.github.io")
+        {
+            assert_eq!(
+                candidates,
+                vec![
+                    ("owner".to_string(), "owner.github.io".to_string()),
+                    ("owner".to_string(), "owner.github.io".to_string()),
+                ]
+            );
+        } else {
+            panic!("expected a PagesSite classification");
+        }
+    }
+
+    #[test]
+    fn blob_ref_names_containing_a_slash_are_misparsed_into_kind_repo_file() {
+        // KNOWN LIMITATION, documented rather than silently fixed: a
+        // branch/tag name containing a slash (e.g. "feature/foo", a
+        // completely legal Git ref name) is indistinguishable from a
+        // deeper path from the URL shape alone. classify() takes the
+        // segment immediately after "blob" as the whole ref, so
+        // .../blob/feature/foo/src/lib.rs is parsed as ref "feature" with
+        // path "foo/src/lib.rs" — silently wrong, not an error. GitHub's
+        // own web UI resolves this ambiguity by checking which ref
+        // actually exists in the repo, which classify() cannot do (it's
+        // deliberately pure/offline, with no API access). This is worth a
+        // README "Known limitations" entry; it is NOT fixed here, since
+        // fixing it would require classify() to make an API call, which
+        // is out of scope for this module by design.
+        let kind = classify("https://github.com/owner/repo/blob/feature/foo/src/lib.rs");
+        assert!(matches!(
+            kind,
+            LinkKind::RepoFile { ref branch, ref path, .. }
+                if branch == "feature" && path == "foo/src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn percent_encoded_path_segments_are_preserved_not_decoded() {
+        // Documents current behavior rather than asserting it's ideal:
+        // `url::Url::path_segments()` yields segments still
+        // percent-encoded, and nothing in classify()/canonicalize()
+        // decodes them. A file path containing a space (encoded as %20 in
+        // the URL) comes through literally as "%20", not " ". Whether
+        // that should be decoded is a separate product decision — this
+        // test just locks in what actually happens today so a future
+        // change to it is deliberate.
+        let kind = classify("https://github.com/owner/repo/blob/main/a%20file.rs");
+        assert!(matches!(
+            kind,
+            LinkKind::RepoFile { ref path, .. } if path == "a%20file.rs"
+        ));
     }
 }

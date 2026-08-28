@@ -89,6 +89,10 @@ actually produced it. Update anything reading `report.json` to look at
 `ADRs/wrap-report-json-output-in-schema-versioned-envelope.md` for the
 full reasoning behind this shape and the schema-versioning policy.
 
+**Illustrative example — the values below (star counts, timestamps,
+release tags, etc.) are made up to show the shape, not a real repository's
+data.**
+
 ```
 {
   "schema_version": 2,
@@ -192,7 +196,19 @@ non-obvious choices were made.
   either) actually exists as `pages_resolved_repo`. If neither exists
   (e.g. content lives in a subfolder, or the Pages site isn't repo-backed
   at all), `pages_resolved_repo` stays `null` and it's flagged in
-  `fetch_errors` for manual follow-up.
+  `fetch_errors` for manual follow-up. In the degenerate case where the
+  URL's first path segment already matches `{owner}.github.io`, both
+  candidate-generation rules produce the same repo, so it's checked twice
+  — harmless, just one avoidable extra API call.
+- **A repo-file URL's branch/tag name is assumed not to contain a slash.**
+  `.../blob/{ref}/{path...}` takes the segment right after `blob` as the
+  whole ref. A real Git ref containing a slash (e.g. `feature/foo`) is
+  indistinguishable from a deeper path using the URL shape alone, so a
+  link like `.../blob/feature/foo/src/lib.rs` is misparsed — `branch`
+  comes out as `"feature"` and `file_path` as `"foo/src/lib.rs"`, silently
+  wrong rather than an error. Resolving this correctly would require
+  checking which ref actually exists in the repo, which is an API call —
+  out of scope for `classify.rs`, which is deliberately pure and offline.
 - **A GitHub user/org profile page is recognized but not collected.**
   `link_kind: "user_or_org_profile"` (e.g. `github.com/{login}` with no
   repo segment) is deliberately distinct from `"unknown"` — it means the

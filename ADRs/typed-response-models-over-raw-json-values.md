@@ -1,5 +1,5 @@
 ---
-status: "proposed"
+status: "accepted"
 date: 2026-08-27
 decision-makers: Craig
 consulted: Claude (Anthropic) — drafted from prior engineering-review notes

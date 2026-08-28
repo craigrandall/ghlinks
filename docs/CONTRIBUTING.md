@@ -114,6 +114,13 @@ doc-comments rather than a separate design document — see each module's
 top-level `//!` comment for its purpose, non-obvious decisions, and
 failure behavior before writing new prose documentation elsewhere.
 
+Some content is deliberately described in more than one place (e.g. module
+responsibilities appear in both the README and here). If two documents
+ever disagree, source code and its `//!` comments are authoritative for
+*behavior*, ADRs are authoritative for *why* a decision was made, and
+README/CONTRIBUTING are authoritative for the *user/contributor-facing
+summary* — fix the summary to match the source, not the other way around.
+
 - Update `README.md` when:
   - Adding new fields to the JSON schema.
   - Changing configuration or CLI behavior.

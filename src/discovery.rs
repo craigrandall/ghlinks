@@ -84,6 +84,17 @@ pub async fn hacker_news(client: &Client, target_url: &str) -> Result<Vec<Extern
         anyhow::bail!("Hacker News HTTP {status}");
     }
     let v = json_response(resp).await?;
+    Ok(parse_hn_hits(&v))
+}
+
+/// Pure transformation of an Algolia HN Search response body into
+/// `ExternalMention`s — no HTTP, no I/O. Split out specifically so it's
+/// unit-testable directly against representative and malformed payloads,
+/// the same policy/mechanism split `retry.rs` uses. Before this was
+/// extracted, the only "test" for this logic built its own `json!` value
+/// and asserted against that value directly — it never actually called
+/// the parsing code, so it could not have caught a real regression here.
+fn parse_hn_hits(v: &Value) -> Vec<ExternalMention> {
     let mut out = vec![];
     if let Some(hits) = v.get("hits").and_then(|h| h.as_array()) {
         for hit in hits {
@@ -108,7 +119,7 @@ pub async fn hacker_news(client: &Client, target_url: &str) -> Result<Vec<Extern
             });
         }
     }
-    Ok(out)
+    out
 }
 
 async fn json_response(resp: reqwest::Response) -> Result<Value> {
@@ -118,9 +129,10 @@ async fn json_response(resp: reqwest::Response) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_hn_hits;
 
     #[test]
-    fn parses_a_representative_algolia_hit() {
+    fn parses_a_representative_algolia_hit_into_an_external_mention() {
         let sample = serde_json::json!({
             "hits": [
                 {
@@ -132,8 +144,79 @@ mod tests {
                 }
             ]
         });
-        let hits = sample.get("hits").and_then(|h| h.as_array()).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0]["points"], 42);
+        let mentions = parse_hn_hits(&sample);
+        assert_eq!(mentions.len(), 1);
+        let m = &mentions[0];
+        assert_eq!(m.source, "hacker_news");
+        assert_eq!(m.title, "Show HN: ghlinks");
+        assert_eq!(m.url, "https://news.ycombinator.com/item?id=12345");
+        assert_eq!(m.score, Some(42));
+        assert_eq!(m.num_comments, Some(7));
+        assert_eq!(m.created_at.as_deref(), Some("2026-01-01T00:00:00.000Z"));
+    }
+
+    #[test]
+    fn multiple_hits_are_all_parsed_in_order() {
+        let sample = serde_json::json!({
+            "hits": [
+                {"title": "First", "objectID": "1", "points": 1, "num_comments": 0},
+                {"title": "Second", "objectID": "2", "points": 2, "num_comments": 1}
+            ]
+        });
+        let mentions = parse_hn_hits(&sample);
+        assert_eq!(mentions.len(), 2);
+        assert_eq!(mentions[0].title, "First");
+        assert_eq!(mentions[1].title, "Second");
+    }
+
+    #[test]
+    fn missing_title_falls_back_to_untitled_rather_than_erroring() {
+        let sample = serde_json::json!({
+            "hits": [ {"objectID": "1", "points": 1, "num_comments": 0} ]
+        });
+        let mentions = parse_hn_hits(&sample);
+        assert_eq!(mentions[0].title, "(untitled)");
+    }
+
+    #[test]
+    fn missing_object_id_produces_an_empty_url_rather_than_erroring() {
+        let sample = serde_json::json!({
+            "hits": [ {"title": "No id", "points": 1, "num_comments": 0} ]
+        });
+        let mentions = parse_hn_hits(&sample);
+        assert_eq!(mentions[0].url, "");
+    }
+
+    #[test]
+    fn missing_score_and_comment_fields_become_none_not_zero() {
+        // Distinguishing "the API didn't report this" (None) from a
+        // genuine zero matters for the same reason it matters at the
+        // discovery-status level: a caller must not read an absent value
+        // as a confirmed zero.
+        let sample = serde_json::json!({
+            "hits": [ {"title": "Sparse", "objectID": "1"} ]
+        });
+        let mentions = parse_hn_hits(&sample);
+        assert_eq!(mentions[0].score, None);
+        assert_eq!(mentions[0].num_comments, None);
+        assert_eq!(mentions[0].created_at, None);
+    }
+
+    #[test]
+    fn absent_hits_key_returns_an_empty_vec_not_an_error() {
+        let sample = serde_json::json!({});
+        assert!(parse_hn_hits(&sample).is_empty());
+    }
+
+    #[test]
+    fn hits_present_but_not_an_array_returns_an_empty_vec() {
+        let sample = serde_json::json!({"hits": "unexpected string shape"});
+        assert!(parse_hn_hits(&sample).is_empty());
+    }
+
+    #[test]
+    fn empty_hits_array_returns_an_empty_vec() {
+        let sample = serde_json::json!({"hits": []});
+        assert!(parse_hn_hits(&sample).is_empty());
     }
 }

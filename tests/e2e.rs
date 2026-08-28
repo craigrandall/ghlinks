@@ -5,9 +5,12 @@
 //! https://doc.rust-lang.org/cargo/reference/environment-variables.html)
 //! over a small deterministic fixture file, with `--github-base-url`
 //! pointed at a local `wiremock` server so the run is fully offline and
-//! reproducible, and `--skip-external` so Hacker News (which has no
-//! equivalent base-URL override — see `src/main.rs`'s orchestration_tests
-//! module doc-comment) is never called.
+//! reproducible, and `--skip-external` so Hacker News is never called —
+//! HN discovery has its own dedicated success/failure/isolation coverage
+//! in `src/main.rs::orchestration_tests` (via `--hn-base-url`'s
+//! equivalent, `hn_base_url`), so this test doesn't need to duplicate
+//! that; it's here to prove the complete pipeline runs end-to-end, not to
+//! re-prove either API integration individually.
 //!
 //! This is deliberately the *last* layer added (per the agreed testing
 //! sequence: T-3 -> T-7 -> T-4 -> T-1) — it's a contract test of the
@@ -100,11 +103,11 @@ async fn end_to_end_run_over_a_fixture_produces_a_structurally_valid_report() {
 
     let obj = report.as_object().expect("top level must be a JSON object, not an array");
     assert_eq!(
-        obj.keys().collect::<std::collections::BTreeSet<_>>(),
+        obj.keys().cloned().collect::<std::collections::BTreeSet<String>>(),
         ["schema_version", "run_summary", "records"]
             .iter()
             .map(|s| s.to_string())
-            .collect()
+            .collect::<std::collections::BTreeSet<String>>()
     );
     assert_eq!(report["schema_version"], 2);
 

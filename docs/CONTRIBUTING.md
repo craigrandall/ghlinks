@@ -121,25 +121,24 @@ The project is a deterministic collector for GitHub-hosted links:
     unit-testable without live GitHub calls; the actual HTTP resolution
     loop in `process_link()` still owns the short-circuiting).
 
-- **HTTP-boundary integration tests** (`src/github.rs::http_boundary_tests`):
+- **HTTP-boundary integration tests**
+  (`src/github.rs::http_boundary_tests`, `src/discovery.rs::http_boundary_tests`):
   - Run the real `reqwest` client against a local `wiremock` mock server
-    via `GitHub::with_base_url()`, proving actual behavior at HTTP failure
-    boundaries (status codes, retries, pagination, malformed bodies) —
-    not just that a hand-built JSON string parses correctly.
+    via `GitHub::with_base_url()` / `hacker_news()`'s `base_url` parameter,
+    proving actual behavior at HTTP failure boundaries (status codes,
+    retries, pagination, malformed bodies) — not just that a hand-built
+    JSON string parses correctly.
   - `wiremock` is a **test-only** `[dev-dependencies]` entry — it is never
     linked into the release binary and is not required to run `ghlinks`
     itself.
 
 - **Orchestration integration tests** (`src/main.rs::orchestration_tests`):
   - Exercise `process_link()`/`run_batch()` — the real functions `main()`
-    calls — against a mocked GitHub server, covering per-link failure
-    isolation, Pages candidate short-circuiting, and the batch-level
-    contract that one bad link never costs the others their records.
-  - Hacker News discovery has no equivalent base-URL override (unlike
-    `github.rs`), so these tests run with `--skip-external`/
-    `skip_external: true` throughout. Adding an HN override hook is a
-    real, separate, small addition — deliberately left out of this pass
-    rather than bundled in as an incidental extra.
+    calls — against mocked GitHub and Hacker News servers, covering
+    per-link failure isolation, Pages candidate short-circuiting, HN
+    success/zero-hits/failure paths (and that an HN failure never costs
+    already-collected GitHub data), and the batch-level contract that one
+    bad link never costs the others their records.
 
 - **End-to-end integration test** (`tests/e2e.rs`):
   - Runs the actual compiled binary (via Cargo's

@@ -152,7 +152,7 @@ pub struct LinkRecord {
 pub struct RunSummary {
     pub ghlinks_version: &'static str,
     pub github_api_version: &'static str,
-    pub hacker_news_api: &'static str,
+    pub hacker_news_api: String,
     pub reddit_note: &'static str,
     pub started_at: String,
     pub finished_at: String,
@@ -187,7 +187,7 @@ mod tests {
             run_summary: RunSummary {
                 ghlinks_version: "0.0.0-test",
                 github_api_version: "2022-11-28",
-                hacker_news_api: "test",
+                hacker_news_api: "test".to_string(),
                 reddit_note: "test",
                 started_at: "2026-01-01T00:00:00Z".into(),
                 finished_at: "2026-01-01T00:00:01Z".into(),

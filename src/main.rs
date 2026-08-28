@@ -23,9 +23,9 @@
 //! `select_pages_candidate_index()` extracts the Pages
 //! candidate-selection *policy* (which candidate wins) as a pure function
 //! separate from the live HTTP loop that uses it. The hidden
-//! `--github-base-url` CLI flag (default: the real GitHub API; not shown
-//! in `--help`) exists solely so `tests/e2e.rs` can run the actual
-//! compiled binary against a local mock server — see
+//! `--github-base-url` and `--hn-base-url` CLI flags (default: the real
+//! GitHub/HN APIs; not shown in `--help`) exist solely so `tests/e2e.rs`
+//! can run the actual compiled binary against local mock servers — see
 //! `docs/CONTRIBUTING.md` §6 for the full test-layer breakdown.
 
 mod classify;
@@ -106,6 +106,13 @@ struct Args {
     /// reason to point a real run anywhere but the real GitHub API.
     #[arg(long, hide = true, default_value = "https://api.github.com")]
     github_base_url: String,
+
+    /// Overrides the Hacker News Algolia Search API base URL. Hidden from
+    /// --help for the same reason as `--github-base-url`: test-only, lets
+    /// `tests/e2e.rs` and orchestration tests point HN discovery at a
+    /// local mock server too.
+    #[arg(long, hide = true, default_value_t = discovery::HN_DEFAULT_BASE_URL.to_string())]
+    hn_base_url: String,
 }
 
 #[tokio::main]
@@ -156,9 +163,19 @@ async fn main() -> Result<()> {
     let client = Arc::new(client);
     let delay = Duration::from_millis(args.delay_ms);
     let skip_external = args.skip_external;
+    let hn_base_url = Arc::new(args.hn_base_url.clone());
     let total = urls.len();
 
-    let results = run_batch(urls, &gh, &client, args.concurrency, delay, skip_external).await;
+    let results = run_batch(
+        urls,
+        &gh,
+        &client,
+        args.concurrency,
+        delay,
+        skip_external,
+        &hn_base_url,
+    )
+    .await;
 
     let finished_at = chrono::Utc::now();
 
@@ -174,7 +191,10 @@ async fn main() -> Result<()> {
         run_summary: RunSummary {
             ghlinks_version: env!("CARGO_PKG_VERSION"),
             github_api_version: github::GITHUB_API_VERSION,
-            hacker_news_api: "hn.algolia.com/api/v1/search (Algolia-backed HN Search API)",
+            hacker_news_api: format!(
+                "{}/api/v1/search (Algolia-backed HN Search API)",
+                args.hn_base_url
+            ),
             reddit_note: "Reddit is not queried by ghlinks; see ADRs/reddit-mention-discovery-moves-to-synthesis-pass.md",
             started_at: started_at.to_rfc3339(),
             finished_at: finished_at.to_rfc3339(),
@@ -217,14 +237,17 @@ async fn run_batch(
     concurrency: usize,
     delay: Duration,
     skip_external: bool,
+    hn_base_url: &Arc<String>,
 ) -> Vec<LinkRecord> {
     let total = urls.len();
     stream::iter(urls.into_iter().enumerate())
         .map(|(i, url)| {
             let gh = gh.clone();
             let client = client.clone();
+            let hn_base_url = hn_base_url.clone();
             async move {
-                let record = process_link(&url, &gh, &client, delay, skip_external).await;
+                let record =
+                    process_link(&url, &gh, &client, delay, skip_external, &hn_base_url).await;
                 eprintln!("[{}/{}] done: {}", i + 1, total, url);
                 record
             }
@@ -254,6 +277,7 @@ async fn process_link(
     client: &Client,
     delay: Duration,
     skip_external: bool,
+    hn_base_url: &str,
 ) -> LinkRecord {
     let mut errors = vec![];
     let kind = classify(url);
@@ -327,7 +351,7 @@ async fn process_link(
     let mut external = vec![];
     let mut hn_status: &'static str = "skipped";
     if !skip_external {
-        match discovery::hacker_news(client, url).await {
+        match discovery::hacker_news(client, url, hn_base_url).await {
             Ok(mut v) => {
                 hn_status = "ok";
                 external.append(&mut v);
@@ -678,21 +702,14 @@ mod tests {
 }
 
 /// T-4: orchestration/integration tests. These run `process_link()` and
-/// `run_batch()` — the real orchestration code `main()` calls — against a
-/// local `wiremock` GitHub server (via `GitHub::with_base_url()`), with
-/// `skip_external: true` throughout so these stay deterministic and
-/// offline (Hacker News discovery has no equivalent base-URL override;
-/// see the module note below). The goal is establishing *actual* failure
-/// behavior empirically — which is exactly what a future error-taxonomy
-/// decision (#9) should be based on — not merely asserting today's string
-/// prefixes are stable.
-///
-/// Deliberate scope note: HN success/failure paths are NOT covered here.
-/// `discovery.rs::hacker_news()` hardcodes the Algolia endpoint with no
-/// `with_base_url()`-style hook, unlike `github.rs`. Adding one was judged
-/// out of scope for this pass (item 8: no unrelated feature expansion) —
-/// it's a real, separate small addition, not a test-writing task, and
-/// should be its own explicit decision rather than bundled in here.
+/// `run_batch()` — the real orchestration code `main()` calls — against
+/// local `wiremock` servers for both GitHub (via `GitHub::with_base_url()`)
+/// and, as of the HN base-url hook, Hacker News (via `hn_base_url`), so
+/// HN success/failure paths that were previously only reachable with
+/// `skip_external: true` can now be exercised directly too. The goal is
+/// establishing *actual* failure behavior empirically — which is exactly
+/// what a future error-taxonomy decision (#9) should be based on — not
+/// merely asserting today's string prefixes are stable.
 #[cfg(test)]
 mod orchestration_tests {
     use super::*;
@@ -714,6 +731,13 @@ mod orchestration_tests {
         Arc::new(GitHub::new(Client::new(), None, 2).with_base_url(base_url))
     }
 
+    // A syntactically valid but unreachable HN base URL, for tests that
+    // pass `skip_external: true` and therefore should never actually
+    // dial it — if one of these regresses and starts calling HN for
+    // real, hitting this address fails fast instead of quietly reaching
+    // the live API or hanging on a real DNS lookup.
+    const UNUSED_HN_BASE_URL: &str = "http://127.0.0.1:1";
+
     // -- valid repo -> a complete record with no fetch_errors --
     #[tokio::test]
     async fn a_valid_repo_produces_a_record_with_no_errors() {
@@ -731,6 +755,7 @@ mod orchestration_tests {
             &client,
             Duration::from_millis(0),
             true, // skip_external
+            UNUSED_HN_BASE_URL,
         )
         .await;
 
@@ -760,6 +785,7 @@ mod orchestration_tests {
             &client,
             Duration::from_millis(0),
             true,
+            UNUSED_HN_BASE_URL,
         )
         .await;
 
@@ -797,6 +823,7 @@ mod orchestration_tests {
             &client,
             Duration::from_millis(0),
             true,
+            UNUSED_HN_BASE_URL,
         )
         .await;
 
@@ -825,6 +852,7 @@ mod orchestration_tests {
             &client,
             Duration::from_millis(0),
             true,
+            UNUSED_HN_BASE_URL,
         )
         .await;
 
@@ -834,6 +862,119 @@ mod orchestration_tests {
             .fetch_errors
             .iter()
             .any(|e| e.contains("no candidate repo resolved")));
+    }
+
+    // -- HN: a real hit is collected and reflected in external_discovery --
+    #[tokio::test]
+    async fn hn_hit_is_collected_and_status_is_ok() {
+        let gh_server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/graphql")).respond_with(
+            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
+        ).mount(&gh_server).await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&gh_server).await;
+
+        let hn_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "hits": [{"title": "Show HN: ghlinks", "objectID": "1", "points": 10, "num_comments": 2}]
+            })))
+            .mount(&hn_server)
+            .await;
+
+        let gh = gh_client(&gh_server.uri());
+        let client = Arc::new(Client::new());
+        let record = process_link(
+            "https://github.com/owner/repo",
+            &gh,
+            &client,
+            Duration::from_millis(0),
+            false, // do NOT skip external — this is the point of the test
+            &hn_server.uri(),
+        )
+        .await;
+
+        assert_eq!(record.external_discovery.hacker_news_status, "ok");
+        assert_eq!(record.external_mentions.len(), 1);
+        assert!(record.fetch_errors.is_empty());
+    }
+
+    // -- HN: zero hits is "ok", not an error, and doesn't taint the record --
+    #[tokio::test]
+    async fn hn_zero_hits_is_ok_status_not_an_error() {
+        let gh_server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/graphql")).respond_with(
+            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
+        ).mount(&gh_server).await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&gh_server).await;
+
+        let hn_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": []})))
+            .mount(&hn_server)
+            .await;
+
+        let gh = gh_client(&gh_server.uri());
+        let client = Arc::new(Client::new());
+        let record = process_link(
+            "https://github.com/owner/repo",
+            &gh,
+            &client,
+            Duration::from_millis(0),
+            false,
+            &hn_server.uri(),
+        )
+        .await;
+
+        assert_eq!(record.external_discovery.hacker_news_status, "ok");
+        assert_eq!(record.external_discovery.hacker_news_mention_count, 0);
+        assert!(
+            record.fetch_errors.is_empty(),
+            "zero HN hits must not be recorded as a fetch error"
+        );
+    }
+
+    // -- HN failure is isolated: GitHub data survives independently --
+    #[tokio::test]
+    async fn hn_failure_is_isolated_from_otherwise_successful_github_data() {
+        let gh_server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/graphql")).respond_with(
+            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
+        ).mount(&gh_server).await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&gh_server).await;
+
+        let hn_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&hn_server)
+            .await;
+
+        let gh = gh_client(&gh_server.uri());
+        let client = Arc::new(Client::new());
+        let record = process_link(
+            "https://github.com/owner/repo",
+            &gh,
+            &client,
+            Duration::from_millis(0),
+            false,
+            &hn_server.uri(),
+        )
+        .await;
+
+        assert_eq!(record.external_discovery.hacker_news_status, "error");
+        assert!(record.fetch_errors.iter().any(|e| e.contains("hacker_news")));
+        // The point of this test: HN failing must not cost the repo data
+        // that was already collected successfully and independently.
+        assert!(
+            record.repo_data.is_some(),
+            "a Hacker News failure must not affect independently-collected GitHub data"
+        );
+        assert_eq!(
+            record.repo_data.unwrap().description.as_deref(),
+            Some("orchestration test repo")
+        );
     }
 
     // -- run_batch: one failing link does not prevent the others from --
@@ -853,13 +994,23 @@ mod orchestration_tests {
         // to prove per-link isolation without needing two mock servers.
         let gh = gh_client(&good_server.uri());
         let client = Arc::new(Client::new());
+        let hn_base_url = Arc::new(UNUSED_HN_BASE_URL.to_string());
 
         let urls = vec![
             "not a valid url at all".to_string(),
             "https://github.com/owner/repo".to_string(),
             "https://github.com/owner/repo2".to_string(),
         ];
-        let records = run_batch(urls, &gh, &client, 3, Duration::from_millis(0), true).await;
+        let records = run_batch(
+            urls,
+            &gh,
+            &client,
+            3,
+            Duration::from_millis(0),
+            true, // skip_external — HN isolation has its own dedicated tests above
+            &hn_base_url,
+        )
+        .await;
 
         assert_eq!(records.len(), 3, "run_batch must return one record per input URL");
         let unknown_count = records.iter().filter(|r| r.link_kind == "unknown").count();

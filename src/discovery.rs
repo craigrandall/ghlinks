@@ -13,6 +13,16 @@
 //! as the GitHub client (see `retry.rs`), sharing one implementation
 //! rather than reinventing it per source.
 //!
+//! `hacker_news()` takes its base URL as a parameter (default:
+//! `HN_DEFAULT_BASE_URL`) rather than hardcoding it, mirroring
+//! `github.rs::GitHub::with_base_url()` — the same seam, in function-
+//! parameter form since this module has no client struct to hang a
+//! builder method off of. `main.rs`'s hidden `--hn-base-url` flag is the
+//! production call site's only consumer of this; it exists so
+//! `http_boundary_tests` below and `main.rs`'s orchestration/e2e tests can
+//! point this call at a local mock server, the same way the GitHub side
+//! already could.
+//!
 //! Unlike `github.rs`, the Algolia response here is read via raw
 //! `serde_json::Value` lookups rather than typed structs (see
 //! `ADRs/typed-response-models-over-raw-json-values.md`, which is scoped
@@ -37,13 +47,22 @@ use tokio::time::sleep;
 /// transient 5xx or 429 under load — same retry budget as GitHub calls.
 const HN_MAX_RETRIES: u32 = 3;
 
+/// The real Hacker News Algolia Search API. Every production call site
+/// should use this; `main.rs`'s `--hn-base-url` flag defaults to it, and
+/// only overrides it for tests.
+pub const HN_DEFAULT_BASE_URL: &str = "https://hn.algolia.com";
+
 /// Hacker News stories linking to the exact URL, via Algolia's HN Search
 /// API (`restrictSearchableAttributes=url`). Only stories are searched,
 /// not comments — comment-level mentions of a URL are a different, much
 /// noisier signal this tool deliberately doesn't chase.
-pub async fn hacker_news(client: &Client, target_url: &str) -> Result<Vec<ExternalMention>> {
+pub async fn hacker_news(
+    client: &Client,
+    target_url: &str,
+    base_url: &str,
+) -> Result<Vec<ExternalMention>> {
     let endpoint = format!(
-        "https://hn.algolia.com/api/v1/search?query={}&restrictSearchableAttributes=url&tags=story",
+        "{base_url}/api/v1/search?query={}&restrictSearchableAttributes=url&tags=story",
         urlencoding::encode(target_url)
     );
 
@@ -218,5 +237,115 @@ mod tests {
     fn empty_hits_array_returns_an_empty_vec() {
         let sample = serde_json::json!({"hits": []});
         assert!(parse_hn_hits(&sample).is_empty());
+    }
+}
+
+/// HTTP-boundary integration tests for `hacker_news()`, mirroring
+/// `github.rs::http_boundary_tests` — the parser tests above prove
+/// `parse_hn_hits` handles a given JSON shape correctly; these prove the
+/// real `reqwest` call, against real HTTP responses via `base_url`, does
+/// the right thing at success/empty/malformed/failure boundaries. Adding
+/// these was the direct payoff of giving `hacker_news()` a `base_url`
+/// parameter: before that, this endpoint could not be pointed at
+/// anything but the live Algolia API.
+#[cfg(test)]
+mod http_boundary_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn a_hit_goes_through_real_http_to_an_external_mention() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "hits": [{
+                    "title": "Show HN: ghlinks",
+                    "objectID": "12345",
+                    "points": 42,
+                    "num_comments": 7,
+                    "created_at": "2026-01-01T00:00:00.000Z"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let mentions = hacker_news(&client, "https://github.com/owner/repo", &server.uri())
+            .await
+            .unwrap();
+
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].title, "Show HN: ghlinks");
+    }
+
+    // -- zero hits is a valid, successful answer — not an error --
+    #[tokio::test]
+    async fn zero_hits_is_ok_not_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"hits": []})))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let mentions = hacker_news(&client, "https://github.com/owner/repo", &server.uri())
+            .await
+            .unwrap();
+        assert!(mentions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_response_body_is_reported_as_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let result = hacker_news(&client, "https://github.com/owner/repo", &server.uri()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn persistent_server_errors_fail_after_exhausting_the_hn_retry_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let result = hacker_news(&client, "https://github.com/owner/repo", &server.uri()).await;
+
+        assert!(result.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            HN_MAX_RETRIES as usize,
+            "expected exactly HN_MAX_RETRIES attempts, no more, no fewer"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_404_is_reported_without_retrying() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/search"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let result = hacker_news(&client, "https://github.com/owner/repo", &server.uri()).await;
+
+        assert!(result.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "a plain 404 must not be retried");
     }
 }

@@ -15,6 +15,18 @@
 //! its own (that's `classify.rs`) and no API-response handling of its
 //! own (that's `github.rs`/`discovery.rs`) — its job is sequencing and
 //! aggregation, not collection.
+//!
+//! Two pieces exist specifically for testability, not because `main()`
+//! needed them split out for its own sake: `run_batch()` extracts the
+//! concurrency/collection loop so orchestration tests can drive it
+//! directly without going through argument parsing, and
+//! `select_pages_candidate_index()` extracts the Pages
+//! candidate-selection *policy* (which candidate wins) as a pure function
+//! separate from the live HTTP loop that uses it. The hidden
+//! `--github-base-url` CLI flag (default: the real GitHub API; not shown
+//! in `--help`) exists solely so `tests/e2e.rs` can run the actual
+//! compiled binary against a local mock server — see
+//! `docs/CONTRIBUTING.md` §6 for the full test-layer breakdown.
 
 mod classify;
 mod discovery;
@@ -86,6 +98,14 @@ struct Args {
     /// Skip Hacker News external-mention lookups entirely
     #[arg(long, default_value_t = false)]
     skip_external: bool,
+
+    /// Overrides the GitHub API base URL. Hidden from --help on purpose:
+    /// this exists solely so `tests/e2e.rs` can point the real binary at a
+    /// local wiremock server for a deterministic end-to-end fixture test
+    /// (T-1) — it is not a supported user-facing feature, and there's no
+    /// reason to point a real run anywhere but the real GitHub API.
+    #[arg(long, hide = true, default_value = "https://api.github.com")]
+    github_base_url: String,
 }
 
 #[tokio::main]
@@ -129,25 +149,16 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(args.timeout_secs))
         .build()
         .context("building HTTP client")?;
-    let gh = Arc::new(GitHub::new(client.clone(), args.token.clone(), args.max_retries));
+    let gh = Arc::new(
+        GitHub::new(client.clone(), args.token.clone(), args.max_retries)
+            .with_base_url(args.github_base_url.clone()),
+    );
     let client = Arc::new(client);
     let delay = Duration::from_millis(args.delay_ms);
     let skip_external = args.skip_external;
     let total = urls.len();
 
-    let results: Vec<LinkRecord> = stream::iter(urls.into_iter().enumerate())
-        .map(|(i, url)| {
-            let gh = gh.clone();
-            let client = client.clone();
-            async move {
-                let record = process_link(&url, &gh, &client, delay, skip_external).await;
-                eprintln!("[{}/{}] done: {}", i + 1, total, url);
-                record
-            }
-        })
-        .buffer_unordered(args.concurrency)
-        .collect()
-        .await;
+    let results = run_batch(urls, &gh, &client, args.concurrency, delay, skip_external).await;
 
     let finished_at = chrono::Utc::now();
 
@@ -193,6 +204,50 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Runs `process_link` over every URL with bounded concurrency, and
+/// returns one `LinkRecord` per URL. Extracted out of `main()` (T-4) so
+/// the orchestration/failure-isolation contract — one bad link doesn't
+/// prevent the others from producing records, and the batch always
+/// returns exactly `urls.len()` records — can be exercised directly by
+/// tests without going through argument parsing or file I/O.
+async fn run_batch(
+    urls: Vec<String>,
+    gh: &Arc<GitHub>,
+    client: &Arc<Client>,
+    concurrency: usize,
+    delay: Duration,
+    skip_external: bool,
+) -> Vec<LinkRecord> {
+    let total = urls.len();
+    stream::iter(urls.into_iter().enumerate())
+        .map(|(i, url)| {
+            let gh = gh.clone();
+            let client = client.clone();
+            async move {
+                let record = process_link(&url, &gh, &client, delay, skip_external).await;
+                eprintln!("[{}/{}] done: {}", i + 1, total, url);
+                record
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await
+}
+
+/// T-7: pure Pages candidate-selection policy, extracted from the live
+/// resolution loop in `process_link()` below. Given each candidate's
+/// existence-check result *in the same order they were checked*, returns
+/// the index of the first existing candidate — or `None` if none exist
+/// (including an empty input). Contains no HTTP and no I/O, so the
+/// *selection policy* (which candidate wins when more than one exists) is
+/// unit-testable independently of live GitHub calls; the actual HTTP loop
+/// below still short-circuits after the first confirmed match to avoid an
+/// unnecessary extra API call; it's checking against exactly what this
+/// function decides.
+fn select_pages_candidate_index(existence_results: &[bool]) -> Option<usize> {
+    existence_results.iter().position(|&exists| exists)
+}
+
 async fn process_link(
     url: &str,
     gh: &GitHub,
@@ -219,21 +274,33 @@ async fn process_link(
             Err(e) => errors.push(format!("gist: {e}")),
         },
         LinkKind::PagesSite { candidates, .. } => {
+            let mut existence_results: Vec<bool> = Vec::with_capacity(candidates.len());
             for (cand_owner, cand_repo) in candidates {
                 pages_checked.push(format!("{cand_owner}/{cand_repo}"));
                 match gh.repo_exists(cand_owner, cand_repo).await {
-                    Ok(true) => {
-                        pages_resolved = Some(format!("{cand_owner}/{cand_repo}"));
-                        repo_data =
-                            collect_repo_data(cand_owner, cand_repo, gh, delay, &mut errors).await;
-                        break;
+                    Ok(exists) => existence_results.push(exists),
+                    Err(e) => {
+                        errors.push(format!("repo_exists({cand_owner}/{cand_repo}): {e}"));
+                        existence_results.push(false);
                     }
-                    Ok(false) => {}
-                    Err(e) => errors.push(format!("repo_exists({cand_owner}/{cand_repo}): {e}")),
+                }
+                // Short-circuit as soon as the policy would select this
+                // candidate, to avoid an unnecessary extra API call for
+                // any remaining candidates — `select_pages_candidate_index`
+                // is what decides "resolved," this is just not paying for
+                // HTTP calls whose answer can no longer change the result.
+                if select_pages_candidate_index(&existence_results)
+                    == Some(existence_results.len() - 1)
+                {
+                    break;
                 }
                 sleep(delay).await;
             }
-            if pages_resolved.is_none() {
+            if let Some(idx) = select_pages_candidate_index(&existence_results) {
+                let (cand_owner, cand_repo) = &candidates[idx];
+                pages_resolved = Some(format!("{cand_owner}/{cand_repo}"));
+                repo_data = collect_repo_data(cand_owner, cand_repo, gh, delay, &mut errors).await;
+            } else {
                 errors.push(
                     "no candidate repo resolved automatically for this Pages site; \
                      manual lookup needed"
@@ -566,5 +633,244 @@ mod tests {
         assert_eq!(owner.as_deref(), Some("octocat"));
         assert!(repo.is_none());
         assert!(path.is_none());
+    }
+
+    // -- #6: recent_releases is a bounded listing, not a 12-month subset --
+    #[test]
+    fn recent_releases_includes_entries_older_than_12_months_while_the_count_excludes_them() {
+        let node = RepositoryNode::default();
+        let mut repo = build_repo_data(&node);
+        apply_releases(
+            &mut repo,
+            &[
+                ReleaseNode {
+                    tag_name: Some("v2".into()),
+                    name: None,
+                    published_at: Some("2026-06-01T00:00:00Z".into()), // recent
+                },
+                ReleaseNode {
+                    tag_name: Some("v1".into()),
+                    name: None,
+                    published_at: Some("2020-01-01T00:00:00Z".into()), // 6 years old
+                },
+            ],
+        );
+        // recent_releases: bounded CREATED_AT-DESC listing, both entries present.
+        assert_eq!(repo.recent_releases.len(), 2);
+        assert_eq!(repo.recent_releases[1].tag_name.as_deref(), Some("v1"));
+        // releases_last_12_months: only the recent one is counted — proving
+        // the two fields are NOT the same collection and must not be
+        // conflated (see model.rs doc-comments and README "Known
+        // limitations").
+        assert_eq!(repo.releases_last_12_months, Some(1));
+    }
+
+    // -- T-7: pure Pages candidate-selection policy --
+    #[test]
+    fn select_pages_candidate_index_picks_the_first_existing_candidate() {
+        use super::select_pages_candidate_index;
+        assert_eq!(select_pages_candidate_index(&[false, false]), None);
+        assert_eq!(select_pages_candidate_index(&[false, true]), Some(1));
+        assert_eq!(select_pages_candidate_index(&[true, true]), Some(0));
+        assert_eq!(select_pages_candidate_index(&[]), None);
+        assert_eq!(select_pages_candidate_index(&[true]), Some(0));
+    }
+}
+
+/// T-4: orchestration/integration tests. These run `process_link()` and
+/// `run_batch()` — the real orchestration code `main()` calls — against a
+/// local `wiremock` GitHub server (via `GitHub::with_base_url()`), with
+/// `skip_external: true` throughout so these stay deterministic and
+/// offline (Hacker News discovery has no equivalent base-URL override;
+/// see the module note below). The goal is establishing *actual* failure
+/// behavior empirically — which is exactly what a future error-taxonomy
+/// decision (#9) should be based on — not merely asserting today's string
+/// prefixes are stable.
+///
+/// Deliberate scope note: HN success/failure paths are NOT covered here.
+/// `discovery.rs::hacker_news()` hardcodes the Algolia endpoint with no
+/// `with_base_url()`-style hook, unlike `github.rs`. Adding one was judged
+/// out of scope for this pass (item 8: no unrelated feature expansion) —
+/// it's a real, separate small addition, not a test-writing task, and
+/// should be its own explicit decision rather than bundled in here.
+#[cfg(test)]
+mod orchestration_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn ok_repo_body() -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "repository": {
+                    "description": "orchestration test repo",
+                    "releases": { "totalCount": 0 }
+                }
+            }
+        })
+    }
+
+    fn gh_client(base_url: &str) -> Arc<GitHub> {
+        Arc::new(GitHub::new(Client::new(), None, 2).with_base_url(base_url))
+    }
+
+    // -- valid repo -> a complete record with no fetch_errors --
+    #[tokio::test]
+    async fn a_valid_repo_produces_a_record_with_no_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/graphql")).respond_with(
+            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
+        ).mount(&server).await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&server).await;
+
+        let gh = gh_client(&server.uri());
+        let client = Arc::new(Client::new());
+        let record = process_link(
+            "https://github.com/owner/repo",
+            &gh,
+            &client,
+            Duration::from_millis(0),
+            true, // skip_external
+        )
+        .await;
+
+        assert!(record.fetch_errors.is_empty());
+        assert!(record.repo_data.is_some());
+        assert_eq!(
+            record.repo_data.unwrap().description.as_deref(),
+            Some("orchestration test repo")
+        );
+    }
+
+    // -- repo API failure -> a record is still emitted, error captured --
+    #[tokio::test]
+    async fn a_failing_repo_api_call_still_produces_a_record_with_the_error_recorded() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let gh = gh_client(&server.uri());
+        let client = Arc::new(Client::new());
+        let record = process_link(
+            "https://github.com/owner/repo",
+            &gh,
+            &client,
+            Duration::from_millis(0),
+            true,
+        )
+        .await;
+
+        assert!(record.repo_data.is_none());
+        assert!(!record.fetch_errors.is_empty());
+        assert!(record.fetch_errors[0].contains("graphql_repo"));
+    }
+
+    // -- Pages: first candidate exists -> resolved, second NOT queried --
+    #[tokio::test]
+    async fn pages_first_candidate_existing_means_the_second_is_never_queried() {
+        let server = MockServer::start().await;
+        // owner.github.io -> exists
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/owner.github.io"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/graphql")).respond_with(
+            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
+        ).mount(&server).await;
+        Mock::given(method("GET")).and(path("/repos/owner/owner.github.io/languages")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&server).await;
+        Mock::given(method("GET")).and(path("/repos/owner/owner.github.io/contributors")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([]))).mount(&server).await;
+
+        let gh = gh_client(&server.uri());
+        let client = Arc::new(Client::new());
+        // owner.github.io/owner.github.io generates two identical
+        // candidates by classify()'s own documented degenerate-case
+        // behavior; use a distinct path so the two candidates differ:
+        // candidate 1 = owner/owner.github.io (checked, exists),
+        // candidate 2 = owner/somepage (must NOT be queried).
+        let record = process_link(
+            "https://owner.github.io/somepage",
+            &gh,
+            &client,
+            Duration::from_millis(0),
+            true,
+        )
+        .await;
+
+        assert_eq!(record.pages_resolved_repo.as_deref(), Some("owner/owner.github.io"));
+        assert_eq!(
+            record.pages_candidates_checked,
+            vec!["owner/owner.github.io".to_string()],
+            "second candidate must not have been checked once the first resolved"
+        );
+    }
+
+    // -- Pages: neither candidate exists -> unresolved + error recorded --
+    #[tokio::test]
+    async fn pages_no_candidate_existing_leaves_it_unresolved_with_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let gh = gh_client(&server.uri());
+        let client = Arc::new(Client::new());
+        let record = process_link(
+            "https://owner.github.io/somepage",
+            &gh,
+            &client,
+            Duration::from_millis(0),
+            true,
+        )
+        .await;
+
+        assert!(record.pages_resolved_repo.is_none());
+        assert_eq!(record.pages_candidates_checked.len(), 2, "both candidates should have been checked");
+        assert!(record
+            .fetch_errors
+            .iter()
+            .any(|e| e.contains("no candidate repo resolved")));
+    }
+
+    // -- run_batch: one failing link does not prevent the others from --
+    // -- producing records — the central claim main.rs's own module   --
+    // -- doc-comment makes about failure isolation.                    --
+    #[tokio::test]
+    async fn one_failing_link_does_not_abort_the_rest_of_the_batch() {
+        let good_server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/graphql")).respond_with(
+            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
+        ).mount(&good_server).await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&good_server).await;
+
+        // A single shared GitHub client necessarily points at one base
+        // URL, so "failure" for one link here is a URL classify() cannot
+        // resolve (Unknown), not a distinct HTTP failure — that's enough
+        // to prove per-link isolation without needing two mock servers.
+        let gh = gh_client(&good_server.uri());
+        let client = Arc::new(Client::new());
+
+        let urls = vec![
+            "not a valid url at all".to_string(),
+            "https://github.com/owner/repo".to_string(),
+            "https://github.com/owner/repo2".to_string(),
+        ];
+        let records = run_batch(urls, &gh, &client, 3, Duration::from_millis(0), true).await;
+
+        assert_eq!(records.len(), 3, "run_batch must return one record per input URL");
+        let unknown_count = records.iter().filter(|r| r.link_kind == "unknown").count();
+        assert_eq!(unknown_count, 1);
+        let ok_count = records
+            .iter()
+            .filter(|r| r.link_kind == "repo_root" && r.fetch_errors.is_empty())
+            .count();
+        assert_eq!(
+            ok_count, 2,
+            "the two valid links must still succeed despite the unrelated bad link"
+        );
     }
 }

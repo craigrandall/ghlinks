@@ -53,9 +53,33 @@ pub struct RepoData {
     pub github_contributors_count: Option<i64>,
     pub github_contributors_count_semantics: &'static str,
     pub releases_total_count: Option<i64>,
+    /// Count of releases whose `published_at` falls within the last 365
+    /// days of when this record was fetched. Computed independently of
+    /// `recent_releases`' ordering/bound — see that field's doc-comment for
+    /// why the two are not the same collection and must not be conflated.
     pub releases_last_12_months: Option<i64>,
+    /// The `tag_name` of `recent_releases[0]`, i.e. the first entry in
+    /// GitHub's `CREATED_AT DESC` release ordering — NOT independently
+    /// verified as the most-recently-*published* release. GitHub's
+    /// GraphQL `ReleaseOrderField` only supports ordering by `CREATED_AT`
+    /// or `NAME`, not `PUBLISHED_AT`, so "latest" here means "first by
+    /// creation order," which is usually but not provably the same
+    /// release as "most recently published" (a maintainer could, in
+    /// principle, create a release for an older tag after a newer one
+    /// already exists). Treat this as a `CREATED_AT`-ordering fact, not an
+    /// independently-verified publish-date fact.
     pub latest_release_tag: Option<String>,
+    /// `published_at` of `recent_releases[0]` — see `latest_release_tag`'s
+    /// doc-comment for the same `CREATED_AT`-vs-`published_at` caveat.
     pub latest_release_published_at: Option<String>,
+    /// Up to 100 releases, in the exact order GitHub's GraphQL API returns
+    /// them for `orderBy: {field: CREATED_AT, direction: DESC}` (see
+    /// `github.rs::releases()`). This is a **bounded recent-release
+    /// listing, not a 12-month subset** — a repo with 3 releases in the
+    /// last year and 97 older ones will still show up to 100 entries here,
+    /// most of them outside any 12-month window. Use
+    /// `releases_last_12_months` for the 365-day count; do not infer it
+    /// from this list's length or contents.
     pub recent_releases: Vec<ReleaseEntry>,
 }
 

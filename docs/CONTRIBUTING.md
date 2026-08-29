@@ -126,8 +126,8 @@ The project is a deterministic collector for GitHub-hosted links:
   - Run the real `reqwest` client against a local `wiremock` mock server
     via `GitHub::with_base_url()` / `hacker_news()`'s `base_url` parameter,
     proving actual behavior at HTTP failure boundaries (status codes,
-    retries, pagination, malformed bodies) — not just that a hand-built
-    JSON string parses correctly.
+    retries, pagination, malformed bodies, proactive rate-limit
+    throttling) — not just that a hand-built JSON string parses correctly.
   - `wiremock` is a **test-only** `[dev-dependencies]` entry — it is never
     linked into the release binary and is not required to run `ghlinks`
     itself.

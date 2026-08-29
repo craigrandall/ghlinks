@@ -24,12 +24,7 @@ const RETRY_BASE_DELAY_MS: u64 = 500;
 /// / abuse-detection rate limit) or an exhausted
 /// `X-RateLimit-Remaining: 0` (primary rate limit) is treated as
 /// rate-limit-related and retried.
-pub fn should_retry(
-    status: StatusCode,
-    headers: &HeaderMap,
-    attempt: u32,
-    max_retries: u32,
-) -> bool {
+pub fn should_retry(status: StatusCode, headers: &HeaderMap, attempt: u32, max_retries: u32) -> bool {
     if attempt >= max_retries {
         return false;
     }
@@ -177,10 +172,7 @@ mod tests {
     #[test]
     fn proactive_wait_is_none_when_headers_absent_or_remaining_healthy() {
         assert_eq!(proactive_wait_secs(None, None, 2, 900), None);
-        assert_eq!(
-            proactive_wait_secs(Some(500), Some(1_900_000_000), 2, 900),
-            None
-        );
+        assert_eq!(proactive_wait_secs(Some(500), Some(1_900_000_000), 2, 900), None);
     }
 
     #[test]

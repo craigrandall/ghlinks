@@ -108,9 +108,8 @@ impl GitHub {
                 Ok(r) => r,
                 Err(e) => {
                     if attempt >= self.max_retries {
-                        return Err(e).context(format!(
-                            "request to {url} failed after {attempt} attempt(s)"
-                        ));
+                        return Err(e)
+                            .context(format!("request to {url} failed after {attempt} attempt(s)"));
                     }
                     let delay = retry::backoff_delay(attempt);
                     eprintln!(
@@ -338,12 +337,7 @@ async fn response_text(resp: reqwest::Response) -> Result<String> {
 fn parse_last_page(link_header: &str) -> Option<i64> {
     for part in link_header.split(',') {
         if part.contains(r#"rel="last""#) {
-            let url_part = part
-                .split(';')
-                .next()?
-                .trim()
-                .trim_start_matches('<')
-                .trim_end_matches('>');
+            let url_part = part.split(';').next()?.trim().trim_start_matches('<').trim_end_matches('>');
             let url = url::Url::parse(url_part).ok()?;
             for (k, v) in url.query_pairs() {
                 if k == "page" {
@@ -661,9 +655,10 @@ mod tests {
 /// string), these run the *actual* `reqwest` client against a local
 /// `wiremock` server via `GitHub::with_base_url()` — proving what
 /// `ghlinks` actually does at HTTP failure boundaries (status codes,
-/// retries, pagination, malformed bodies), rather than assuming it from
-/// reading the code. `wiremock` is a dev-dependency only (see Cargo.toml);
-/// nothing here runs in the release binary.
+/// retries, pagination, malformed bodies, proactive rate-limit
+/// throttling), rather than assuming it from reading the code. `wiremock`
+/// is a dev-dependency only (see Cargo.toml); nothing here runs in the
+/// release binary.
 ///
 /// Deliberately scoped to representative behavioral contracts (per the
 /// review that motivated this test module), not exhaustive per-endpoint
@@ -771,10 +766,7 @@ mod http_boundary_tests {
 
         let gh = client_against(&server.uri(), 3);
         let result = gh.graphql_repo("owner", "repo").await;
-        assert!(
-            result.is_err(),
-            "malformed body must not parse as a valid response"
-        );
+        assert!(result.is_err(), "malformed body must not parse as a valid response");
     }
 
     // -- T-3.4a: a plain HTTP failure with no rate-limit signal is --
@@ -910,19 +902,12 @@ mod http_boundary_tests {
         let releases = gh.releases("owner", "repo").await.unwrap();
 
         assert_eq!(
-            releases
-                .iter()
-                .map(|r| r.tag_name.clone())
-                .collect::<Vec<_>>(),
+            releases.iter().map(|r| r.tag_name.clone()).collect::<Vec<_>>(),
             vec![Some("v3".into()), Some("v2".into()), Some("v1".into())],
             "release order across pages must remain CREATED_AT DESC, not be re-sorted"
         );
         let requests = server.received_requests().await.unwrap();
-        assert_eq!(
-            requests.len(),
-            2,
-            "expected one request per page, cursor-chained"
-        );
+        assert_eq!(requests.len(), 2, "expected one request per page, cursor-chained");
     }
 
     // -- T-3.7a: contributors_count() uses the Link header's rel="last" --
@@ -948,10 +933,7 @@ mod http_boundary_tests {
             .await;
 
         let gh = client_against(&server.uri(), 3);
-        assert_eq!(
-            gh.contributors_count("owner", "repo").await.unwrap(),
-            Some(14)
-        );
+        assert_eq!(gh.contributors_count("owner", "repo").await.unwrap(), Some(14));
     }
 
     // -- T-3.7b: with no Link header (whole result fit on one page), --
@@ -966,10 +948,7 @@ mod http_boundary_tests {
             .await;
 
         let gh = client_against(&server.uri(), 3);
-        assert_eq!(
-            gh.contributors_count("owner", "repo").await.unwrap(),
-            Some(1)
-        );
+        assert_eq!(gh.contributors_count("owner", "repo").await.unwrap(), Some(1));
     }
 
     // -- T-3.8: gist() end-to-end through the real HTTP client --
@@ -992,5 +971,80 @@ mod http_boundary_tests {
         let gist = gh.gist("abc123").await.unwrap();
         assert_eq!(gist.description.as_deref(), Some("a test gist"));
         assert_eq!(gist.owner.unwrap().login.as_deref(), Some("octocat"));
+    }
+
+    // -- Rate limiting: proactive throttle actually fires end-to-end --
+    //
+    // `retry.rs::proactive_wait_secs()`'s math is already unit-tested in
+    // isolation; these two tests prove `GitHub::throttle_if_low()` is
+    // actually wired to it correctly — that a real response's
+    // `x-ratelimit-remaining`/`x-ratelimit-reset` headers get parsed and
+    // an actual pause happens (or doesn't) before the call returns — the
+    // one HTTP-boundary behavior T-3 didn't originally cover. The reset
+    // timestamp is chosen close to "now" specifically so this stays a
+    // fast, deterministic test rather than actually waiting out anything
+    // close to `MAX_PROACTIVE_WAIT_SECS`.
+    fn epoch_seconds_from_now(offset: i64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        (now + offset).to_string()
+    }
+
+    #[tokio::test]
+    async fn nearly_exhausted_rate_limit_causes_a_measurable_pause_before_returning() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({}))
+                    // RATE_LIMIT_FLOOR is 2, so remaining: 1 must trigger a pause.
+                    .insert_header("x-ratelimit-remaining", "1")
+                    .insert_header("x-ratelimit-reset", epoch_seconds_from_now(3).as_str()),
+            )
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let started = std::time::Instant::now();
+        let exists = gh.repo_exists("owner", "repo").await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(exists);
+        assert!(
+            elapsed >= Duration::from_millis(1500),
+            "expected the client to pause roughly until the rate-limit reset \
+             (~3s out, truncated to whole seconds), but only {elapsed:?} \
+             elapsed — throttle_if_low may not be reading the response \
+             headers correctly"
+        );
+    }
+
+    #[tokio::test]
+    async fn healthy_rate_limit_does_not_pause() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({}))
+                    .insert_header("x-ratelimit-remaining", "4999")
+                    .insert_header("x-ratelimit-reset", epoch_seconds_from_now(3600).as_str()),
+            )
+            .mount(&server)
+            .await;
+
+        let gh = client_against(&server.uri(), 3);
+        let started = std::time::Instant::now();
+        gh.repo_exists("owner", "repo").await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "a healthy rate limit must not cause any proactive pause, but \
+             {elapsed:?} elapsed"
+        );
     }
 }

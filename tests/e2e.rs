@@ -52,17 +52,15 @@ async fn end_to_end_run_over_a_fixture_produces_a_structurally_valid_report() {
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/graphql"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "data": {
-                    "repository": {
-                        "description": "e2e fixture repo",
-                        "stargazerCount": 1,
-                        "releases": { "totalCount": 0 }
-                    }
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": {
+                "repository": {
+                    "description": "e2e fixture repo",
+                    "stargazerCount": 1,
+                    "releases": { "totalCount": 0 }
                 }
-            })),
-        )
+            }
+        })))
         .mount(&server)
         .await;
     // languages / contributors — anything else GET
@@ -96,23 +94,16 @@ async fn end_to_end_run_over_a_fixture_produces_a_structurally_valid_report() {
         .status()
         .expect("failed to spawn the ghlinks binary");
 
-    assert!(
-        status.success(),
-        "ghlinks exited with a failure status: {status:?}"
-    );
+    assert!(status.success(), "ghlinks exited with a failure status: {status:?}");
 
     // --- Assert: the top-level report.json contract ---
     let raw = fs::read_to_string(&output_path).expect("report.json was not written");
     let report: Value = serde_json::from_str(&raw).expect("report.json was not valid JSON");
     let _ = fs::remove_file(&output_path);
 
-    let obj = report
-        .as_object()
-        .expect("top level must be a JSON object, not an array");
+    let obj = report.as_object().expect("top level must be a JSON object, not an array");
     assert_eq!(
-        obj.keys()
-            .cloned()
-            .collect::<std::collections::BTreeSet<String>>(),
+        obj.keys().cloned().collect::<std::collections::BTreeSet<String>>(),
         ["schema_version", "run_summary", "records"]
             .iter()
             .map(|s| s.to_string())
@@ -120,9 +111,7 @@ async fn end_to_end_run_over_a_fixture_produces_a_structurally_valid_report() {
     );
     assert_eq!(report["schema_version"], 2);
 
-    let records = report["records"]
-        .as_array()
-        .expect("records must be an array");
+    let records = report["records"].as_array().expect("records must be an array");
     assert_eq!(records.len(), 2, "one record per fixture line");
 
     let repo_record = records
@@ -143,10 +132,7 @@ async fn end_to_end_run_over_a_fixture_produces_a_structurally_valid_report() {
         .find(|r| r["link_kind"] == "unknown")
         .expect("expected an unknown record for the unparseable fixture line");
     assert!(
-        !unknown_record["fetch_errors"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
+        !unknown_record["fetch_errors"].as_array().unwrap().is_empty(),
         "an unparseable URL should be recorded as an error, not silently dropped"
     );
 

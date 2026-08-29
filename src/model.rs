@@ -214,7 +214,9 @@ mod tests {
     #[test]
     fn report_serializes_as_an_object_with_the_three_documented_top_level_keys() {
         let value = serde_json::to_value(minimal_report()).unwrap();
-        let obj = value.as_object().expect("Report must serialize as a JSON object, not an array");
+        let obj = value
+            .as_object()
+            .expect("Report must serialize as a JSON object, not an array");
         assert!(obj.contains_key("schema_version"));
         assert!(obj.contains_key("run_summary"));
         assert!(obj.contains_key("records"));

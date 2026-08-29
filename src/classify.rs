@@ -12,10 +12,7 @@
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum LinkKind {
     /// e.g. https://github.com/{owner}/{repo}
-    RepoRoot {
-        owner: String,
-        repo: String,
-    },
+    RepoRoot { owner: String, repo: String },
     /// e.g. https://github.com/{owner}/{repo}/blob/{branch}/{path...}
     /// Note: despite the field name, `{branch}` here is whatever ref the
     /// URL used — a branch, tag, or full commit SHA are all valid and
@@ -27,10 +24,7 @@ pub enum LinkKind {
         path: String,
     },
     /// e.g. https://gist.github.com/{owner}/{gist_id}
-    Gist {
-        owner: String,
-        gist_id: String,
-    },
+    Gist { owner: String, gist_id: String },
     /// e.g. https://{owner}.github.io/{path...} — GitHub Pages, not
     /// guaranteed to map 1:1 to a repo of the same name, so we record
     /// candidate repos to check rather than assuming.
@@ -43,9 +37,7 @@ pub enum LinkKind {
     /// page, not a repository. Recognized and deliberately out of scope,
     /// which is different from a URL we simply don't understand at all
     /// (see `Unknown`).
-    UserOrOrgProfile {
-        login: String,
-    },
+    UserOrOrgProfile { login: String },
     /// A GitHub URL we recognize but do not collect as a repository link
     /// (e.g. .../issues, .../tree/branch/subdir).
     UnsupportedGithubUrl,

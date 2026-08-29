@@ -60,7 +60,6 @@ Implementation is compliant when:
 - `main.rs`'s `ExternalDiscovery` construction no longer lists `"reddit"` in `sources`, no longer references a Reddit-specific result limit, and `coverage` text describes only Hacker News.
 - `model.rs`'s `ExternalDiscovery` struct no longer carries a Reddit-specific field, and the doc comment on `ExternalMention.source` no longer lists `"reddit"` as an expected value.
 - A `ghlinks` run against a real URL produces a `report.json` with zero Reddit-related entries in `fetch_errors`.
-- `reddit_client.rs` exists outside the repository
 
 ## Pros and Cons of the Options
 

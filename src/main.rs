@@ -271,6 +271,46 @@ fn select_pages_candidate_index(existence_results: &[bool]) -> Option<usize> {
     existence_results.iter().position(|&exists| exists)
 }
 
+/// Builds the `fetch_errors` message for an unresolved Pages site. Pure
+/// string formatting, no I/O — split out specifically so its content
+/// (which is the actual deliverable here, not the fact that an error
+/// occurred) is unit-testable without live GitHub calls.
+///
+/// The decided direction for Pages resolution (see the review that
+/// prompted this) was explicitly to leave the two-candidate check as-is
+/// and instead make the *failure artifact* informative enough that a
+/// downstream LLM synthesis pass — which already does web search — can
+/// finish the job itself. That means this message needs to carry enough
+/// to act on: the original URL, which candidates were already ruled out
+/// (so they aren't redundantly re-suggested), and a concrete next step,
+/// not just "manual lookup needed."
+fn pages_unresolved_message(
+    url: &str,
+    owner: &str,
+    path: &str,
+    candidates: &[(String, String)],
+) -> String {
+    let tried = candidates
+        .iter()
+        .map(|(o, r)| format!("{o}/{r}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let path_hint = if path.is_empty() { String::new() } else { format!(" {path}") };
+    let existence_summary = if candidates.len() == 1 {
+        "it didn't resolve"
+    } else {
+        "none of them resolved"
+    };
+    format!(
+        "no candidate repo resolved automatically for this Pages site ({url}); \
+         tried {tried} — {existence_summary} — the site's actual source repo \
+         likely uses a different name than these conventions predict; a web \
+         search for \"{owner} github pages{path_hint} source repository\" \
+         (or inspecting the site's rendered HTML/CNAME) is the next step to \
+         resolve this manually"
+    )
+}
+
 async fn process_link(
     url: &str,
     gh: &GitHub,
@@ -297,14 +337,25 @@ async fn process_link(
             Ok(g) => gist_data = Some(build_gist_data(&g)),
             Err(e) => errors.push(format!("gist: {e}")),
         },
-        LinkKind::PagesSite { candidates, .. } => {
+        LinkKind::PagesSite { owner, path, candidates } => {
             let mut existence_results: Vec<bool> = Vec::with_capacity(candidates.len());
             for (cand_owner, cand_repo) in candidates {
-                pages_checked.push(format!("{cand_owner}/{cand_repo}"));
+                let label = format!("{cand_owner}/{cand_repo}");
                 match gh.repo_exists(cand_owner, cand_repo).await {
-                    Ok(exists) => existence_results.push(exists),
+                    Ok(exists) => {
+                        // Annotate the outcome directly in
+                        // `pages_candidates_checked` rather than leaving a
+                        // bare "owner/repo" list — a downstream LLM
+                        // synthesis pass (which can web search) needs to
+                        // know which candidates were already ruled out,
+                        // not just which were considered.
+                        pages_checked
+                            .push(format!("{label} ({})", if exists { "exists" } else { "not found" }));
+                        existence_results.push(exists);
+                    }
                     Err(e) => {
-                        errors.push(format!("repo_exists({cand_owner}/{cand_repo}): {e}"));
+                        pages_checked.push(format!("{label} (check failed: {e})"));
+                        errors.push(format!("repo_exists({label}): {e}"));
                         existence_results.push(false);
                     }
                 }
@@ -325,11 +376,7 @@ async fn process_link(
                 pages_resolved = Some(format!("{cand_owner}/{cand_repo}"));
                 repo_data = collect_repo_data(cand_owner, cand_repo, gh, delay, &mut errors).await;
             } else {
-                errors.push(
-                    "no candidate repo resolved automatically for this Pages site; \
-                     manual lookup needed"
-                        .into(),
-                );
+                errors.push(pages_unresolved_message(url, owner, path, candidates));
             }
         }
         LinkKind::UserOrOrgProfile { .. } => errors.push(
@@ -699,6 +746,45 @@ mod tests {
         assert_eq!(select_pages_candidate_index(&[]), None);
         assert_eq!(select_pages_candidate_index(&[true]), Some(0));
     }
+
+    // -- Pages failure-artifact enrichment: the unresolved-message --
+    // -- content is the actual deliverable, so it's asserted directly. --
+    #[test]
+    fn pages_unresolved_message_names_the_url_and_both_untried_candidates() {
+        use super::pages_unresolved_message;
+        let candidates = vec![
+            ("ashtom".to_string(), "ashtom.github.io".to_string()),
+            ("ashtom".to_string(), "agent-autonomy".to_string()),
+        ];
+        let msg = pages_unresolved_message(
+            "https://ashtom.github.io/agent-autonomy",
+            "ashtom",
+            "agent-autonomy",
+            &candidates,
+        );
+        assert!(msg.contains("https://ashtom.github.io/agent-autonomy"));
+        assert!(msg.contains("ashtom/ashtom.github.io"));
+        assert!(msg.contains("ashtom/agent-autonomy"));
+        assert!(msg.contains("none of them resolved"));
+        assert!(
+            msg.to_lowercase().contains("web search"),
+            "message should point the downstream LLM synthesis pass toward a concrete next step"
+        );
+    }
+
+    #[test]
+    fn pages_unresolved_message_handles_a_single_candidate_and_empty_path() {
+        use super::pages_unresolved_message;
+        // A root Pages URL (e.g. https://owner.github.io/) has no path
+        // segments, so classify() only ever produces one candidate.
+        let candidates = vec![("owner".to_string(), "owner.github.io".to_string())];
+        let msg = pages_unresolved_message("https://owner.github.io/", "owner", "", &candidates);
+        assert!(msg.contains("it didn't resolve"));
+        assert!(
+            !msg.contains("  "),
+            "an empty path must not leave a double space in the search-query hint: {msg:?}"
+        );
+    }
 }
 
 /// T-4: orchestration/integration tests. These run `process_link()` and
@@ -830,7 +916,7 @@ mod orchestration_tests {
         assert_eq!(record.pages_resolved_repo.as_deref(), Some("owner/owner.github.io"));
         assert_eq!(
             record.pages_candidates_checked,
-            vec!["owner/owner.github.io".to_string()],
+            vec!["owner/owner.github.io (exists)".to_string()],
             "second candidate must not have been checked once the first resolved"
         );
     }
@@ -858,10 +944,26 @@ mod orchestration_tests {
 
         assert!(record.pages_resolved_repo.is_none());
         assert_eq!(record.pages_candidates_checked.len(), 2, "both candidates should have been checked");
-        assert!(record
+        assert!(
+            record
+                .pages_candidates_checked
+                .iter()
+                .all(|c| c.contains("(not found)")),
+            "a 404 on repo_exists is a confirmed non-existent candidate, not a check failure: {:?}",
+            record.pages_candidates_checked
+        );
+        let unresolved_error = record
             .fetch_errors
             .iter()
-            .any(|e| e.contains("no candidate repo resolved")));
+            .find(|e| e.contains("no candidate repo resolved"))
+            .expect("expected an unresolved-Pages error");
+        // The enriched message is the actual deliverable here: it must
+        // carry enough for a downstream LLM synthesis pass to act on
+        // without re-deriving what ghlinks already tried.
+        assert!(unresolved_error.contains("https://owner.github.io/somepage"));
+        assert!(unresolved_error.contains("owner/owner.github.io"));
+        assert!(unresolved_error.contains("owner/somepage"));
+        assert!(unresolved_error.to_lowercase().contains("web search"));
     }
 
     // -- HN: a real hit is collected and reflected in external_discovery --

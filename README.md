@@ -190,16 +190,28 @@ non-obvious choices were made.
   starred it) — only the gist's HTML page shows those numbers. Everything
   else about a gist (description, files, revision count, comments) is
   included.
-- **GitHub Pages sites are resolved by guessing, then verifying.** A site
-  at `owner.github.io/project` might be backed by `owner/owner.github.io`
-  or by `owner/project` — the tool checks both and records which one (if
-  either) actually exists as `pages_resolved_repo`. If neither exists
-  (e.g. content lives in a subfolder, or the Pages site isn't repo-backed
-  at all), `pages_resolved_repo` stays `null` and it's flagged in
-  `fetch_errors` for manual follow-up. In the degenerate case where the
-  URL's first path segment already matches `{owner}.github.io`, both
-  candidate-generation rules produce the same repo, so it's checked twice
-  — harmless, just one avoidable extra API call.
+- **GitHub Pages sites are resolved by guessing, then verifying — and
+  when neither guess resolves, the failure record is deliberately
+  detailed rather than generic.** A site at `owner.github.io/project`
+  might be backed by `owner/owner.github.io` or by `owner/project` — the
+  tool checks both and records which one (if either) actually exists as
+  `pages_resolved_repo`, and now also annotates each entry in
+  `pages_candidates_checked` with its outcome (`"owner/repo (exists)"`,
+  `"(not found)"`, or `"(check failed: ...)"`) rather than leaving a bare
+  list. If neither candidate resolves (e.g. content lives in a subfolder,
+  or the Pages site isn't repo-backed at all), `pages_resolved_repo` stays
+  `null` and `fetch_errors` gets a message naming the original URL, both
+  candidates already ruled out, and a concrete next step (a web-search
+  query shape) — this tool deliberately does not try to guess harder
+  itself (see the review that prompted this: teaching the guesser more
+  heuristics trades a documented limitation for an undocumented one just
+  as often as it helps); the enriched failure record exists so a
+  downstream LLM synthesis pass, which already does web search, can
+  finish the resolution instead. In the degenerate case where the URL's
+  first path segment already matches `{owner}.github.io`, both
+  candidate-generation rules produce the same repo; if that repo doesn't
+  exist, the identical duplicate gets checked again right after —
+  harmless, just a wasted API call in an already-failing case.
 - **A repo-file URL's branch/tag name is assumed not to contain a slash.**
   `.../blob/{ref}/{path...}` takes the segment right after `blob` as the
   whole ref. A real Git ref containing a slash (e.g. `feature/foo`) is

@@ -1,11 +1,16 @@
-# Failure taxonomy notes (prerequisite for a future #9 decision)
+# Failure taxonomy notes (empirical input to the #9 decision — now closed)
 
-**Status: informational notes, not a schema change.** `fetch_errors` remains
-`Vec<String>` in `schema_version: 2`. This document exists to satisfy the
-prerequisite identified during the T-3/T-4/T-7 testing pass: define the
-domain-level failure taxonomy from *observed* behavior before deciding
-whether a structured `fetch_errors` schema (schema v3) is warranted, and if
-so, what its error model should mean. See `docs/CONTRIBUTING.md` §5 and
+**Status: informational reference, not a schema change — and not
+pending one.** `fetch_errors` remains `Vec<String>` in `schema_version:
+2`. This document was built as the empirical prerequisite for deciding
+whether a structured `fetch_errors` schema (schema v3) was warranted:
+define the domain-level failure taxonomy from *observed* behavior before
+designing a schema around it. That decision has now been made — see
+`ADRs/keep-fetch-errors-as-plain-strings-not-schema-v3.md`: **no schema
+change, `fetch_errors` stays `Vec<String>`.** This document remains
+useful as an accurate reference of what actually happens, per failure
+origin, and is the starting input if that decision is ever reopened
+against a concrete future need — see `docs/CONTRIBUTING.md` §5 and
 `ADRs/wrap-report-json-output-in-schema-versioned-envelope.md`'s
 schema-versioning policy for the surrounding context.
 
@@ -30,31 +35,35 @@ not a theoretical taxonomy invented ahead of the evidence.
 
 ## What this does NOT yet resolve
 
-This table describes *what happens today*, which is a necessary input to a
-taxonomy decision — it is not itself the taxonomy. Still open, and
-deliberately left open here rather than decided unilaterally:
+This table describes *what happens today*. It intentionally does not
+resolve the following — not because they were overlooked, but because
+`ADRs/keep-fetch-errors-as-plain-strings-not-schema-v3.md` decided these
+don't need resolving unless a concrete future need reopens that decision:
 
-- Which of the rows above should be `error` vs. `warning` severity in a
-  future structured schema.
-- Which are `retryable` from a downstream consumer's perspective (e.g.
-  should a research pipeline re-run `ghlinks` on records where the origin
-  was a 5xx, but not on ones where it was `Unknown` classification?).
+- Which of the rows above would be `error` vs. `warning` severity in a
+  structured schema.
+- Which would be `retryable` from a downstream consumer's perspective
+  (e.g. should a research pipeline re-run `ghlinks` on records where the
+  origin was a 5xx, but not on ones where it was `Unknown`
+  classification?).
 - Whether "HN zero results" (`hacker_news_status: "ok"`,
-  `hacker_news_mention_count: 0`) belongs in any error taxonomy at all —
-  current behavior treats it correctly as *not* an error, and that should
-  probably stay true in any future structured form too.
+  `hacker_news_mention_count: 0`) would belong in any error taxonomy at
+  all — current behavior treats it correctly as *not* an error, and that
+  should stay true regardless.
 - Whether GitHub 404 on endpoints *other than* `repo_exists` (where it's
-  currently just "not success" and bails) should get its own distinct
+  currently just "not success" and bails) would deserve its own distinct
   category, since it's a different situation from a repo that's private,
   rate-limited, or genuinely erroring.
 
-## Recommended next step, if/when #9 is revisited
+## If #9 is ever reopened
 
-Use this table as the starting input, not the final answer: assign
-kind/severity/retryable values deliberately (per link_kind and per failure
-origin above), get that taxonomy reviewed on its own terms, and only then
-design the JSON shape and bump `schema_version`. Changing
-`Vec<String>` -> `Vec<ErrorObject>` before the taxonomy itself is settled
-risks exactly the kind of schema churn
+`ADRs/keep-fetch-errors-as-plain-strings-not-schema-v3.md` closed this
+question for now: no schema change. If a concrete future need (not a
+speculative one) reopens it, use the table above as the starting input,
+not the final answer: assign kind/severity/retryable values deliberately
+(per link_kind and per failure origin above), get that taxonomy reviewed
+on its own terms, and only then design the JSON shape and bump
+`schema_version`. Changing `Vec<String>` -> `Vec<ErrorObject>` before the
+taxonomy itself is settled risks exactly the kind of schema churn
 `ADRs/wrap-report-json-output-in-schema-versioned-envelope.md` is meant to
 avoid.

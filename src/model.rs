@@ -142,6 +142,11 @@ pub struct LinkRecord {
     pub fetch_errors: Vec<String>,
     pub fetched_at: String,
     pub collector_version: &'static str,
+    /// Same build identifier as `run_summary.ghlinks_build` — the output
+    /// of `git describe --tags --always --dirty` (or `"unknown"` if git
+    /// was absent at build time), stamped per-record so each record
+    /// carries its own provenance independent of the run envelope.
+    pub collector_build: &'static str,
 }
 
 /// One run's worth of machine-readable provenance, kept separate from the
@@ -151,6 +156,13 @@ pub struct LinkRecord {
 #[derive(Serialize, Debug)]
 pub struct RunSummary {
     pub ghlinks_version: &'static str,
+    /// Build identifier from `build.rs` — typically `git describe --tags
+    /// --always --dirty`, or `"unknown"` if git was unavailable at build
+    /// time. More robust than `ghlinks_version` alone: if you forget to
+    /// bump `Cargo.toml` after tagging, this still pinpoints the exact
+    /// commit that produced the binary. Can be overridden at build time
+    /// via the `GHLINKS_BUILD` environment variable.
+    pub ghlinks_build: &'static str,
     pub github_api_version: &'static str,
     pub hacker_news_api: String,
     pub reddit_note: &'static str,
@@ -186,6 +198,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             run_summary: RunSummary {
                 ghlinks_version: "0.0.0-test",
+                ghlinks_build: "test-build",
                 github_api_version: "2022-11-28",
                 hacker_news_api: "test".to_string(),
                 reddit_note: "test",
@@ -214,7 +227,9 @@ mod tests {
     #[test]
     fn report_serializes_as_an_object_with_the_three_documented_top_level_keys() {
         let value = serde_json::to_value(minimal_report()).unwrap();
-        let obj = value.as_object().expect("Report must serialize as a JSON object, not an array");
+        let obj = value
+            .as_object()
+            .expect("Report must serialize as a JSON object, not an array");
         assert!(obj.contains_key("schema_version"));
         assert!(obj.contains_key("run_summary"));
         assert!(obj.contains_key("records"));
@@ -253,6 +268,7 @@ mod tests {
             fetch_errors: vec![],
             fetched_at: "2026-01-01T00:00:00Z".into(),
             collector_version: "0.0.0-test",
+            collector_build: "test-build",
         });
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["records"].as_array().unwrap().len(), 1);

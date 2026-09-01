@@ -108,8 +108,9 @@ impl GitHub {
                 Ok(r) => r,
                 Err(e) => {
                     if attempt >= self.max_retries {
-                        return Err(e)
-                            .context(format!("request to {url} failed after {attempt} attempt(s)"));
+                        return Err(e).context(format!(
+                            "request to {url} failed after {attempt} attempt(s)"
+                        ));
                     }
                     let delay = retry::backoff_delay(attempt);
                     eprintln!(
@@ -337,7 +338,12 @@ async fn response_text(resp: reqwest::Response) -> Result<String> {
 fn parse_last_page(link_header: &str) -> Option<i64> {
     for part in link_header.split(',') {
         if part.contains(r#"rel="last""#) {
-            let url_part = part.split(';').next()?.trim().trim_start_matches('<').trim_end_matches('>');
+            let url_part = part
+                .split(';')
+                .next()?
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>');
             let url = url::Url::parse(url_part).ok()?;
             for (k, v) in url.query_pairs() {
                 if k == "page" {
@@ -766,7 +772,10 @@ mod http_boundary_tests {
 
         let gh = client_against(&server.uri(), 3);
         let result = gh.graphql_repo("owner", "repo").await;
-        assert!(result.is_err(), "malformed body must not parse as a valid response");
+        assert!(
+            result.is_err(),
+            "malformed body must not parse as a valid response"
+        );
     }
 
     // -- T-3.4a: a plain HTTP failure with no rate-limit signal is --
@@ -902,12 +911,19 @@ mod http_boundary_tests {
         let releases = gh.releases("owner", "repo").await.unwrap();
 
         assert_eq!(
-            releases.iter().map(|r| r.tag_name.clone()).collect::<Vec<_>>(),
+            releases
+                .iter()
+                .map(|r| r.tag_name.clone())
+                .collect::<Vec<_>>(),
             vec![Some("v3".into()), Some("v2".into()), Some("v1".into())],
             "release order across pages must remain CREATED_AT DESC, not be re-sorted"
         );
         let requests = server.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 2, "expected one request per page, cursor-chained");
+        assert_eq!(
+            requests.len(),
+            2,
+            "expected one request per page, cursor-chained"
+        );
     }
 
     // -- T-3.7a: contributors_count() uses the Link header's rel="last" --
@@ -933,7 +949,10 @@ mod http_boundary_tests {
             .await;
 
         let gh = client_against(&server.uri(), 3);
-        assert_eq!(gh.contributors_count("owner", "repo").await.unwrap(), Some(14));
+        assert_eq!(
+            gh.contributors_count("owner", "repo").await.unwrap(),
+            Some(14)
+        );
     }
 
     // -- T-3.7b: with no Link header (whole result fit on one page), --
@@ -948,7 +967,10 @@ mod http_boundary_tests {
             .await;
 
         let gh = client_against(&server.uri(), 3);
-        assert_eq!(gh.contributors_count("owner", "repo").await.unwrap(), Some(1));
+        assert_eq!(
+            gh.contributors_count("owner", "repo").await.unwrap(),
+            Some(1)
+        );
     }
 
     // -- T-3.8: gist() end-to-end through the real HTTP client --

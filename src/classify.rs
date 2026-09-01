@@ -12,10 +12,7 @@
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum LinkKind {
     /// e.g. https://github.com/{owner}/{repo}
-    RepoRoot {
-        owner: String,
-        repo: String,
-    },
+    RepoRoot { owner: String, repo: String },
     /// e.g. https://github.com/{owner}/{repo}/blob/{branch}/{path...}
     /// Note: despite the field name, `{branch}` here is whatever ref the
     /// URL used — a branch, tag, or full commit SHA are all valid and
@@ -27,10 +24,7 @@ pub enum LinkKind {
         path: String,
     },
     /// e.g. https://gist.github.com/{owner}/{gist_id}
-    Gist {
-        owner: String,
-        gist_id: String,
-    },
+    Gist { owner: String, gist_id: String },
     /// e.g. https://{owner}.github.io/{path...} — GitHub Pages, not
     /// guaranteed to map 1:1 to a repo of the same name, so we record
     /// candidate repos to check rather than assuming.
@@ -43,9 +37,7 @@ pub enum LinkKind {
     /// page, not a repository. Recognized and deliberately out of scope,
     /// which is different from a URL we simply don't understand at all
     /// (see `Unknown`).
-    UserOrOrgProfile {
-        login: String,
-    },
+    UserOrOrgProfile { login: String },
     /// A GitHub URL we recognize but do not collect as a repository link
     /// (e.g. .../issues, .../tree/branch/subdir).
     UnsupportedGithubUrl,
@@ -115,6 +107,14 @@ pub fn classify(raw_url: &str) -> LinkKind {
         let mut candidates = vec![(owner.clone(), format!("{owner}.github.io"))];
         if let Some(first) = segs.first() {
             candidates.push((owner.clone(), first.clone()));
+        }
+        // Skip the second candidate if it's identical to the first â
+        // the degenerate case where the URL's first path segment already
+        // matches `{owner}.github.io` (e.g. `owner.github.io/owner.github.io`)
+        // would otherwise produce a literal duplicate, wasting one
+        // GitHub API call.
+        if candidates.len() == 2 && candidates[0] == candidates[1] {
+            candidates.pop();
         }
         return LinkKind::PagesSite {
             owner,
@@ -270,25 +270,18 @@ mod tests {
     }
 
     #[test]
-    fn pages_candidates_can_duplicate_when_the_first_path_segment_matches_the_owner_repo() {
+    fn pages_candidates_are_deduplicated_when_the_first_path_segment_matches_the_owner_repo() {
         // owner.github.io/owner.github.io is a degenerate but legal URL:
         // both candidate-generation rules produce the same (owner, repo)
-        // pair, so `candidates` ends up with a literal duplicate. It's
-        // harmless (main.rs's resolution loop just checks the same repo
-        // twice and stops at the first success either way) but wasteful —
-        // one avoidable extra GitHub API call per occurrence. Documenting
-        // the current behavior here rather than silently dedupe-ing it,
-        // since that's a small, separate fix main.rs's Pages-resolution
-        // loop or classify()'s candidate generation could make.
+        // pair. As of 0.15.0, classify() deduplicates the candidates so
+        // the resolution loop doesn't waste an API call checking the same
+        // repo twice.
         if let LinkKind::PagesSite { candidates, .. } =
             classify("https://owner.github.io/owner.github.io")
         {
             assert_eq!(
                 candidates,
-                vec![
-                    ("owner".to_string(), "owner.github.io".to_string()),
-                    ("owner".to_string(), "owner.github.io".to_string()),
-                ]
+                vec![("owner".to_string(), "owner.github.io".to_string()),]
             );
         } else {
             panic!("expected a PagesSite classification");

@@ -47,6 +47,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 
+/// Compile-time build identifier from `build.rs` — typically the output
+/// of `git describe --tags --always --dirty`, or `"unknown"` if git
+/// wasn't available at build time. Surfaced in `run_summary.ghlinks_build`
+/// and each record's `collector_build` so a consumer can pinpoint the
+/// exact source revision that produced a `report.json`, independent of
+/// the `Cargo.toml` version (which can lag behind the actual git tag).
+/// Can be overridden at build time via the `GHLINKS_BUILD` environment
+/// variable.
+const GHLINKS_BUILD: &str = env!("GHLINKS_BUILD");
+
 /// Deterministic collector for a list of GitHub-hosted links. Reads one URL
 /// per line, classifies each, pulls structured facts from GitHub's API, and
 /// (optionally) checks free discovery APIs for external mentions. Writes a
@@ -183,13 +193,17 @@ async fn main() -> Result<()> {
     for r in &results {
         *link_kind_counts.entry(r.link_kind.clone()).or_insert(0) += 1;
     }
-    let records_with_errors = results.iter().filter(|r| !r.fetch_errors.is_empty()).count();
+    let records_with_errors = results
+        .iter()
+        .filter(|r| !r.fetch_errors.is_empty())
+        .count();
     let total_records = results.len();
 
     let report = Report {
         schema_version: model::SCHEMA_VERSION,
         run_summary: RunSummary {
             ghlinks_version: env!("CARGO_PKG_VERSION"),
+            ghlinks_build: GHLINKS_BUILD,
             github_api_version: github::GITHUB_API_VERSION,
             hacker_news_api: format!(
                 "{}/api/v1/search (Algolia-backed HN Search API)",
@@ -230,6 +244,12 @@ async fn main() -> Result<()> {
 /// prevent the others from producing records, and the batch always
 /// returns exactly `urls.len()` records — can be exercised directly by
 /// tests without going through argument parsing or file I/O.
+///
+/// `buffer_unordered` returns records in completion order, not input
+/// order. Records are sorted by their original input-file index before
+/// returning, so `report.json` is deterministic across runs — the same
+/// input always produces the same record order regardless of which link
+/// happened to finish first.
 async fn run_batch(
     urls: Vec<String>,
     gh: &Arc<GitHub>,
@@ -240,7 +260,7 @@ async fn run_batch(
     hn_base_url: &Arc<String>,
 ) -> Vec<LinkRecord> {
     let total = urls.len();
-    stream::iter(urls.into_iter().enumerate())
+    let mut results: Vec<(usize, LinkRecord)> = stream::iter(urls.into_iter().enumerate())
         .map(|(i, url)| {
             let gh = gh.clone();
             let client = client.clone();
@@ -249,12 +269,19 @@ async fn run_batch(
                 let record =
                     process_link(&url, &gh, &client, delay, skip_external, &hn_base_url).await;
                 eprintln!("[{}/{}] done: {}", i + 1, total, url);
-                record
+                (i, record)
             }
         })
         .buffer_unordered(concurrency)
         .collect()
-        .await
+        .await;
+
+    // Sort by the original input-file index so output record order is
+    // deterministic regardless of completion order — a stable sort
+    // preserves completion order as a tiebreaker, though ties are
+    // impossible here (indices are unique).
+    results.sort_by_key(|(i, _)| *i);
+    results.into_iter().map(|(_, r)| r).collect()
 }
 
 /// T-7: pure Pages candidate-selection policy, extracted from the live
@@ -295,7 +322,11 @@ fn pages_unresolved_message(
         .map(|(o, r)| format!("{o}/{r}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let path_hint = if path.is_empty() { String::new() } else { format!(" {path}") };
+    let path_hint = if path.is_empty() {
+        String::new()
+    } else {
+        format!(" {path}")
+    };
     let existence_summary = if candidates.len() == 1 {
         "it didn't resolve"
     } else {
@@ -337,7 +368,11 @@ async fn process_link(
             Ok(g) => gist_data = Some(build_gist_data(&g)),
             Err(e) => errors.push(format!("gist: {e}")),
         },
-        LinkKind::PagesSite { owner, path, candidates } => {
+        LinkKind::PagesSite {
+            owner,
+            path,
+            candidates,
+        } => {
             let mut existence_results: Vec<bool> = Vec::with_capacity(candidates.len());
             for (cand_owner, cand_repo) in candidates {
                 let label = format!("{cand_owner}/{cand_repo}");
@@ -349,8 +384,10 @@ async fn process_link(
                         // synthesis pass (which can web search) needs to
                         // know which candidates were already ruled out,
                         // not just which were considered.
-                        pages_checked
-                            .push(format!("{label} ({})", if exists { "exists" } else { "not found" }));
+                        pages_checked.push(format!(
+                            "{label} ({})",
+                            if exists { "exists" } else { "not found" }
+                        ));
                         existence_results.push(exists);
                     }
                     Err(e) => {
@@ -434,6 +471,7 @@ async fn process_link(
         fetch_errors: errors,
         fetched_at: chrono::Utc::now().to_rfc3339(),
         collector_version: env!("CARGO_PKG_VERSION"),
+        collector_build: GHLINKS_BUILD,
     }
 }
 
@@ -524,7 +562,10 @@ fn build_repo_data(node: &github::RepositoryNode) -> RepoData {
         languages_bytes: Default::default(),
         created_at: node.created_at.clone(),
         pushed_at: node.pushed_at.clone(),
-        default_branch: node.default_branch_ref.as_ref().and_then(|b| b.name.clone()),
+        default_branch: node
+            .default_branch_ref
+            .as_ref()
+            .and_then(|b| b.name.clone()),
         commit_count_default_branch: node
             .default_branch_ref
             .as_ref()
@@ -633,7 +674,9 @@ mod tests {
     #[test]
     fn invalid_or_old_release_dates_are_not_counted() {
         let node = RepositoryNode {
-            releases: Some(CountWrapper { total_count: Some(2) }),
+            releases: Some(CountWrapper {
+                total_count: Some(2),
+            }),
             ..Default::default()
         };
         let mut repo = build_repo_data(&node);
@@ -698,8 +741,9 @@ mod tests {
 
     #[test]
     fn user_or_org_profile_is_described_but_not_treated_as_a_repo() {
-        let (kind_name, owner, repo, path) =
-            describe_kind(&LinkKind::UserOrOrgProfile { login: "octocat".into() });
+        let (kind_name, owner, repo, path) = describe_kind(&LinkKind::UserOrOrgProfile {
+            login: "octocat".into(),
+        });
         assert_eq!(kind_name, "user_or_org_profile");
         assert_eq!(owner.as_deref(), Some("octocat"));
         assert!(repo.is_none());
@@ -828,10 +872,15 @@ mod orchestration_tests {
     #[tokio::test]
     async fn a_valid_repo_produces_a_record_with_no_errors() {
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/graphql")).respond_with(
-            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
-        ).mount(&server).await;
-        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
 
         let gh = gh_client(&server.uri());
         let client = Arc::new(Client::new());
@@ -890,11 +939,21 @@ mod orchestration_tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
             .mount(&server)
             .await;
-        Mock::given(method("POST")).and(path("/graphql")).respond_with(
-            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
-        ).mount(&server).await;
-        Mock::given(method("GET")).and(path("/repos/owner/owner.github.io/languages")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&server).await;
-        Mock::given(method("GET")).and(path("/repos/owner/owner.github.io/contributors")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([]))).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/owner.github.io/languages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/owner.github.io/contributors"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
 
         let gh = gh_client(&server.uri());
         let client = Arc::new(Client::new());
@@ -913,7 +972,10 @@ mod orchestration_tests {
         )
         .await;
 
-        assert_eq!(record.pages_resolved_repo.as_deref(), Some("owner/owner.github.io"));
+        assert_eq!(
+            record.pages_resolved_repo.as_deref(),
+            Some("owner/owner.github.io")
+        );
         assert_eq!(
             record.pages_candidates_checked,
             vec!["owner/owner.github.io (exists)".to_string()],
@@ -943,7 +1005,11 @@ mod orchestration_tests {
         .await;
 
         assert!(record.pages_resolved_repo.is_none());
-        assert_eq!(record.pages_candidates_checked.len(), 2, "both candidates should have been checked");
+        assert_eq!(
+            record.pages_candidates_checked.len(),
+            2,
+            "both candidates should have been checked"
+        );
         assert!(
             record
                 .pages_candidates_checked
@@ -970,10 +1036,15 @@ mod orchestration_tests {
     #[tokio::test]
     async fn hn_hit_is_collected_and_status_is_ok() {
         let gh_server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/graphql")).respond_with(
-            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
-        ).mount(&gh_server).await;
-        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&gh_server).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&gh_server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&gh_server)
+            .await;
 
         let hn_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1005,10 +1076,15 @@ mod orchestration_tests {
     #[tokio::test]
     async fn hn_zero_hits_is_ok_status_not_an_error() {
         let gh_server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/graphql")).respond_with(
-            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
-        ).mount(&gh_server).await;
-        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&gh_server).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&gh_server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&gh_server)
+            .await;
 
         let hn_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1041,10 +1117,15 @@ mod orchestration_tests {
     #[tokio::test]
     async fn hn_failure_is_isolated_from_otherwise_successful_github_data() {
         let gh_server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/graphql")).respond_with(
-            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
-        ).mount(&gh_server).await;
-        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&gh_server).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&gh_server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&gh_server)
+            .await;
 
         let hn_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1066,7 +1147,10 @@ mod orchestration_tests {
         .await;
 
         assert_eq!(record.external_discovery.hacker_news_status, "error");
-        assert!(record.fetch_errors.iter().any(|e| e.contains("hacker_news")));
+        assert!(record
+            .fetch_errors
+            .iter()
+            .any(|e| e.contains("hacker_news")));
         // The point of this test: HN failing must not cost the repo data
         // that was already collected successfully and independently.
         assert!(
@@ -1085,10 +1169,15 @@ mod orchestration_tests {
     #[tokio::test]
     async fn one_failing_link_does_not_abort_the_rest_of_the_batch() {
         let good_server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/graphql")).respond_with(
-            ResponseTemplate::new(200).set_body_json(ok_repo_body()),
-        ).mount(&good_server).await;
-        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({}))).mount(&good_server).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&good_server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&good_server)
+            .await;
 
         // A single shared GitHub client necessarily points at one base
         // URL, so "failure" for one link here is a URL classify() cannot
@@ -1114,7 +1203,11 @@ mod orchestration_tests {
         )
         .await;
 
-        assert_eq!(records.len(), 3, "run_batch must return one record per input URL");
+        assert_eq!(
+            records.len(),
+            3,
+            "run_batch must return one record per input URL"
+        );
         let unknown_count = records.iter().filter(|r| r.link_kind == "unknown").count();
         assert_eq!(unknown_count, 1);
         let ok_count = records
@@ -1125,5 +1218,53 @@ mod orchestration_tests {
             ok_count, 2,
             "the two valid links must still succeed despite the unrelated bad link"
         );
+    }
+
+    // -- deterministic output ordering: records are sorted by input-file --
+    // -- index, not completion order, so the same input always produces --
+    // -- the same record order in report.json.                          --
+    #[tokio::test]
+    async fn run_batch_returns_records_in_input_order_not_completion_order() {
+        let good_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok_repo_body()))
+            .mount(&good_server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&good_server)
+            .await;
+
+        let gh = gh_client(&good_server.uri());
+        let client = Arc::new(Client::new());
+        let hn_base_url = Arc::new(UNUSED_HN_BASE_URL.to_string());
+
+        // Three distinct repos so each record's `repo` field uniquely
+        // identifies which input URL produced it. With concurrency > 1,
+        // completion order is nondeterministic, but the output must
+        // always match input order.
+        let urls = vec![
+            "https://github.com/owner/alpha".to_string(),
+            "https://github.com/owner/beta".to_string(),
+            "https://github.com/owner/gamma".to_string(),
+        ];
+        let records = run_batch(
+            urls,
+            &gh,
+            &client,
+            3,
+            Duration::from_millis(0),
+            true,
+            &hn_base_url,
+        )
+        .await;
+
+        assert_eq!(records.len(), 3);
+        // Records must be in the same order as the input URLs, not in
+        // whatever order they happened to complete.
+        assert_eq!(records[0].repo.as_deref(), Some("alpha"));
+        assert_eq!(records[1].repo.as_deref(), Some("beta"));
+        assert_eq!(records[2].repo.as_deref(), Some("gamma"));
     }
 }

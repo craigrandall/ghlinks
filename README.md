@@ -43,9 +43,13 @@ $env:GITHUB_TOKEN = "ghp_..."          # or let run.ps1 prompt you securely
 ./run.ps1 -InputFile .\links.txt -OutputFile report.json
 ```
 
-Useful flags: `-SkipExternal` (skip HN lookups), `-Concurrency 5`,
-`-DelayMs 400` (be gentler on rate limits), `-TimeoutSecs 45`,
-`-MaxRetries 5`, `-SkipBuild` (reuse an existing binary).
+Useful flags:
+- `-SkipExternal` (skip HN lookups)
+- `-Concurrency 5`
+- `-DelayMs 400` (be gentler on rate limits)
+- `-TimeoutSecs 45`
+- `-MaxRetries 5`
+- `-SkipBuild` (reuse an existing binary).
 
 A relative `-OutputFile` (including the default) is always resolved
 against `-InputFile`'s own directory, not whatever directory you happened
@@ -97,7 +101,8 @@ data.**
 {
   "schema_version": 2,
   "run_summary": {
-    "ghlinks_version": "0.14.0",
+    "ghlinks_version": "0.15.0",
+    "ghlinks_build": "v0.15.0",         // git describe --tags --always --dirty, or "unknown" if git is absent at build time; override via GHLINKS_BUILD env var
     "github_api_version": "2022-11-28",
     "hacker_news_api": "hn.algolia.com/api/v1/search (Algolia-backed HN Search API)",
     "reddit_note": "Reddit is not queried by ghlinks; see ADRs/reddit-mention-discovery-moves-to-synthesis-pass.md",
@@ -168,7 +173,8 @@ data.**
       },
       "fetch_errors": [],
       "fetched_at": "2026-08-27T05:00:41Z",
-      "collector_version": "0.14.0"
+      "collector_version": "0.15.0",
+      "collector_build": "v0.15.0"       // same build identifier as run_summary.ghlinks_build, for per-record provenance
     }
   ]
 }
@@ -209,9 +215,9 @@ non-obvious choices were made.
   downstream LLM synthesis pass, which already does web search, can
   finish the resolution instead. In the degenerate case where the URL's
   first path segment already matches `{owner}.github.io`, both
-  candidate-generation rules produce the same repo; if that repo doesn't
-  exist, the identical duplicate gets checked again right after —
-  harmless, just a wasted API call in an already-failing case.
+  candidate-generation rules produce the same repo; as of 0.15.0,
+  `classify()` deduplicates the candidates so the resolution loop no
+  longer wastes an API call checking the same repo twice.
 - **A repo-file URL's branch/tag name is assumed not to contain a slash.**
   `.../blob/{ref}/{path...}` takes the segment right after `blob` as the
   whole ref. A real Git ref containing a slash (e.g. `feature/foo`) is
@@ -282,7 +288,7 @@ non-obvious choices were made.
 
 ## Intended workflow
 
-1. Run this tool locally against your link list → `report.json`.
+1. Run this tool locally against your link list — `report.json`.
 2. Hand `report.json` (plus the original link list, for anything the tool
    flagged as unresolved) to an LLM.
 3. The LLM writes the actual report: plain-language project summaries, and

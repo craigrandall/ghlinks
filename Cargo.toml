@@ -1,6 +1,6 @@
 [package]
 name = "ghlinks"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 description = "Deterministic collector for GitHub-hosted link metadata (repos, gists, Pages sites) plus free-API discovery of external mentions."
 
@@ -21,7 +21,7 @@ futures = "0.3"
 urlencoding = "2"
 
 [dev-dependencies]
-# Test infrastructure dependency ONLY — not required by the application at
+# Test infrastructure dependency ONLY — not required by the application at
 # runtime, not present in [dependencies], and never linked into the release
 # binary. Used exclusively by integration tests (`src/github.rs`,
 # `src/main.rs`, `tests/e2e.rs`) to run a local HTTP mock server that

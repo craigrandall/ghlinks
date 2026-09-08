@@ -69,6 +69,8 @@ jobs:
     name: Publish Release
     needs: build-release
     runs-on: ubuntu-latest
+    permissions:
+        contents: write   # Only this job can write releases
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

@@ -10,22 +10,22 @@ on:
 jobs:
   build-release:
     name: Build Release
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            name: ghlinks-linux
+            name: linux
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            name: ghlinks-windows.exe
+            name: windows.exe
           - target: x86_64-apple-darwin
             os: macos-latest
-            name: ghlinks-macos
+            name: macos
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -33,7 +33,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Cache dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -49,13 +49,14 @@ jobs:
 
       - name: Prepare artifact name
         id: artifact
+        shell: bash
         run: |
           if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-            echo "name=ghlinks-${{ github.ref_name }}-windows.exe" >> $GITHUB_OUTPUT
-            echo "path=target/${{ matrix.target }}/release/ghlinks.exe" >> $GITHUB_OUTPUT
+            echo "name=ghlinks-${{ github.ref_name }}-windows.exe" >> "$GITHUB_OUTPUT"
+            echo "path=target/${{ matrix.target }}/release/ghlinks.exe" >> "$GITHUB_OUTPUT"
           else
-            echo "name=ghlinks-${{ github.ref_name }}-${{ matrix.target }}" >> $GITHUB_OUTPUT
-            echo "path=target/${{ matrix.target }}/release/ghlinks" >> $GITHUB_OUTPUT
+            echo "name=ghlinks-${{ github.ref_name }}-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+            echo "path=target/${{ matrix.target }}/release/ghlinks" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload artifact
@@ -73,7 +74,7 @@ jobs:
         contents: write   # Only this job can write releases
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -82,7 +83,7 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/ghlinks-*-linux

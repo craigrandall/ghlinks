@@ -82,6 +82,12 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Inspect downloaded artifacts
+        shell: bash
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -maxdepth 2 -type f -print
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:

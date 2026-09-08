@@ -1,0 +1,94 @@
+name: Release
+# This workflow triggers when a tag matching the pattern `v*` is pushed (e.g., `v0.15.0`, `v1.0.0`).
+# It builds release binaries for Linux, Windows, and macOS, and uploads them as GitHub Release assets.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-release:
+    name: Build Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: windows.exe
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: macos
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact name
+        id: artifact
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            echo "name=ghlinks-${{ github.ref_name }}-windows.exe" >> "$GITHUB_OUTPUT"
+            echo "path=target/${{ matrix.target }}/release/ghlinks.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=ghlinks-${{ github.ref_name }}-${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+            echo "path=target/${{ matrix.target }}/release/ghlinks" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ steps.artifact.outputs.path }}
+          compression-level: 9
+
+  publish-release:
+    name: Publish Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+        contents: write   # Only this job can write releases
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            artifacts/ghlinks-*-linux
+            artifacts/ghlinks-*-windows.exe
+            artifacts/ghlinks-*-macos
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

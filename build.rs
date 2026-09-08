@@ -8,14 +8,14 @@
 //! build identifier still pinpoints which commit produced the binary.
 //!
 //! Resolution order:
-//! 1. `GHLINKS_BUILD` environment variable (explicit override â useful
+//! 1. `GHLINKS_BUILD` environment variable (explicit override -- useful
 //!    for reproducible builds or CI that wants to stamp a different
 //!    identifier).
 //! 2. `git describe --tags --always --dirty` output (the default in a
-//!    normal working tree â produces something like `v0.15.0` or
+//!    normal working tree -- produces something like `v0.15.0` or
 //!    `v0.14.9-3-g1a2b3c4-dirty`).
 //! 3. `"unknown"` if git is unavailable (e.g. a tarball source with no
-//!    `.git` directory) â the build must never fail just because git
+//!    `.git` directory) -- the build must never fail just because git
 //!    isn't present.
 
 use std::process::Command;

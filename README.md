@@ -46,17 +46,17 @@ Download the appropriate binary for your platform from the latest release:
 
 ```bash
 # Linux
-curl -LO https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-x86_64-unknown-linux-gnu
-chmod +x ghlinks-<version>-x86_64-unknown-linux-gnu
-mv ghlinks-<version>-x86_64-unknown-linux-gnu ghlinks
+curl -LO https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-linux
+chmod +x ghlinks-<version>-linux
+mv ghlinks-<version>-linux ghlinks
 
 # macOS
-curl -LO https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-x86_64-apple-darwin
-chmod +x ghlinks-<version>-x86_64-apple-darwin
-mv ghlinks-<version>-x86_64-apple-darwin ghlinks
+curl -LO https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-macos
+chmod +x ghlinks-<version>-macos
+mv ghlinks-<version>-macos ghlinks
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri "https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-x86_64-pc-windows-msvc.exe" -OutFile "ghlinks.exe"
+Invoke-WebRequest -Uri "https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-windows.exe" -OutFile "ghlinks.exe"
 ```
 
 ## Build & run

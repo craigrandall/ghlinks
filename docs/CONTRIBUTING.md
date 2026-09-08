@@ -247,7 +247,9 @@ The release workflow (`.github/workflows/release.yml`) triggers when tags matchi
 
 1. Update the version in `Cargo.toml`
 2. Commit the change: `git commit -m "Release vX.Y.Z"`
-3. Create and push an annotated tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`
+3. Push the change and merge it to `main`
+4. Verify that the version change is present on `main`
+5. Create and push an annotated tag from the merged `main` commit: `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`
 
 The workflow will:
 - Build release binaries for Linux, Windows, and macOS

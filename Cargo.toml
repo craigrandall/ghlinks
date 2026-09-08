@@ -1,6 +1,6 @@
 [package]
 name = "ghlinks"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 description = "Deterministic collector for GitHub-hosted link metadata (repos, gists, Pages sites) plus free-API discovery of external mentions."
 

@@ -218,3 +218,55 @@ inferred from the code "looking right." If any step above hasn't been
 run, say that explicitly in the PR rather than implying it has — this
 project would rather show an honest "not yet verified" than a false
 green.
+
+## 9. Continuous Integration
+
+The project uses GitHub Actions for automated verification and release:
+
+### CI Workflow
+
+The CI workflow (`.github/workflows/ci.yml`) runs automatically on:
+- Every push to the `main` branch
+- Every pull request targeting the `main` branch
+
+It executes the complete verification gate in sequence:
+
+1. **`cargo fmt --check`** - Verifies code formatting
+2. **`cargo clippy -- -D warnings`** - Lints with warnings as errors
+3. **`cargo check`** - Checks compilation
+4. **`cargo test`** - Runs all tests
+5. **`cargo build --release`** - Builds the release binary
+
+**If any step fails, the workflow fails and the PR cannot be merged.**
+
+### Release Workflow
+
+The release workflow (`.github/workflows/release.yml`) triggers when tags matching `v*` are pushed to the repository.
+
+**To create a release:**
+
+1. Update the version in `Cargo.toml`
+2. Commit the change: `git commit -m "Release vX.Y.Z"`
+3. Create and push an annotated tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`
+
+The workflow will:
+- Build release binaries for Linux, Windows, and macOS
+- Create a GitHub Release
+- Upload all binaries as release assets
+- Generate release notes from commit history
+
+**Note:** The workflow uses the existing `GITHUB_TOKEN` secret (automatically available) and does not require any additional configuration.
+
+### Local Verification
+
+Before pushing changes, run the verification gate locally:
+
+```bash
+cargo fmt
+cargo clippy
+cargo check
+cargo test
+cargo build --release
+```
+
+This matches exactly what the CI workflow will run, allowing you to catch issues before they reach CI.

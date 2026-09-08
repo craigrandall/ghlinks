@@ -34,6 +34,31 @@ instead of ~10–40k tokens of scraped HTML.
 - Internet access on first `cargo build` (to download crates) and every run
   (to hit GitHub/HN).
 
+## Releases
+
+Pre-built binaries for Linux, Windows, and macOS are available on the [Releases page](https://github.com/craigrandall/ghlinks/releases).
+
+Releases are automatically created when tags matching `v*` are pushed (e.g., `v0.15.0`).
+
+### Installation from Release
+
+Download the appropriate binary for your platform from the latest release:
+
+```bash
+# Linux
+curl -LO https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-x86_64-unknown-linux-gnu
+chmod +x ghlinks-<version>-x86_64-unknown-linux-gnu
+mv ghlinks-<version>-x86_64-unknown-linux-gnu ghlinks
+
+# macOS
+curl -LO https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-x86_64-apple-darwin
+chmod +x ghlinks-<version>-x86_64-apple-darwin
+mv ghlinks-<version>-x86_64-apple-darwin ghlinks
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://github.com/craigrandall/ghlinks/releases/latest/download/ghlinks-<version>-x86_64-pc-windows-msvc.exe" -OutFile "ghlinks.exe"
+```
+
 ## Build & run
 
 ### Windows (PowerShell 7.x)
@@ -75,6 +100,16 @@ Run `./target/release/ghlinks --help` for all flags, including
 `run.ps1` hides token entry, but passes the resulting token to the child
 process through `GITHUB_TOKEN`; it is secure entry, not secure storage. Do
 not use `-SkipBuild` unless you trust the existing project-local binary.
+
+## Continuous Integration
+
+This project uses GitHub Actions for automated verification and release:
+
+- **CI Workflow** (`/.github/workflows/ci.yml`): Runs on every push to `main` and every pull request. It executes the full verification gate: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo check`, `cargo test`, and `cargo build --release`.
+
+- **Release Workflow** (`/.github/workflows/release.yml`): Triggers on tag pushes matching `v*`. It builds release binaries for Linux, Windows, and macOS, then publishes them as GitHub Release assets.
+
+All workflows cache dependencies for faster execution.
 
 ## Input format
 
@@ -306,7 +341,9 @@ judgment calls with whoever's actually reading the discussions.
 
 ## Contributing
 
-Contributions are welcome. See `docs\CONTRIBUTING.md` for more details.
+Contributions are welcome. See `docs/CONTRIBUTING.md` for more details.
+
+**Pull Request Requirements**: All PRs must pass the CI workflow checks (formatting, linting, tests, build). The workflow runs automatically on PR creation and updates.
 
 ## License
 
